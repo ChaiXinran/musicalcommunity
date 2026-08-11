@@ -22,6 +22,22 @@ Authorization: Bearer <access_token>
 
 Worker 会调用 Supabase Auth `getUser(token)` 进行在线校验，不信任前端传来的 `user_id` 或角色。
 
+## 当前账号
+
+### `GET /v1/me`
+
+返回当前登录账号的资料、审核状态、角色和能力：
+
+```json
+{
+  "profile": { "status": "pending" },
+  "roles": ["user"],
+  "capabilities": { "comment": false, "submit": false, "admin": false }
+}
+```
+
+新账号确认邮箱后默认是 `pending`。只有状态为 `active` 的账号可以评论、点赞和投稿；收藏仍可使用。
+
 ## 公共接口
 
 ### `GET /health`
@@ -69,9 +85,31 @@ Worker 会调用 Supabase Auth `getUser(token)` 进行在线校验，不信任�
 
 ## 审核
 
+### `GET /v1/admin/applications`
+
+仅 `admin`。列出待审核账号申请。
+
+### `POST /v1/admin/applications/:id/review`
+
+仅 `admin`。账号通过：
+
+```json
+{ "decision": "approved", "review_note": "资料正常" }
+```
+
+账号拒绝：
+
+```json
+{ "decision": "rejected", "review_note": "拒绝原因" }
+```
+
+### `GET /v1/admin/submissions`
+
+仅 `admin`。列出待审核投稿。
+
 ### `POST /v1/admin/submissions/:id/review`
 
-需要 `moderator` 或 `admin` 角色。
+网站管理工作台要求 `admin` 角色。底层数据库 RPC 仍允许 `moderator` 或 `admin`，便于未来拆分内容审核员角色。
 
 批准：
 
@@ -144,4 +182,3 @@ Worker 用 R2 Binding 复查对象大小、Content-Type 和文件头。通过后
 - 查询和编辑自己的 `profiles` 可编辑字段。
 
 角色分配、待审投稿写入、媒体状态和正式活动写入不能从浏览器完成。
-

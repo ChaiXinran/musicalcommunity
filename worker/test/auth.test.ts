@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bearerToken } from '../src/auth';
+import { bearerToken, managementLevel } from '../src/auth';
 import { ApiError } from '../src/errors';
 
 describe('bearerToken', () => {
@@ -13,3 +13,11 @@ describe('bearerToken', () => {
   });
 });
 
+describe('managementLevel', () => {
+  it('maps roles to the highest management level', () => {
+    expect(managementLevel(['user', 'admin'])).toBe(1);
+    expect(managementLevel(['user', 'editor'])).toBe(2);
+    expect(managementLevel(['user', 'moderator'])).toBe(3);
+    expect(managementLevel(['user'])).toBeNull();
+  });
+});

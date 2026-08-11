@@ -37,6 +37,29 @@ export const reviewSchema = z.object({
   }
 });
 
+export const accountReviewSchema = z.object({
+  decision: z.enum(['approved', 'rejected']),
+  review_note: optionalText(2000),
+});
+
+export const reviewQuestionSchema = z.object({
+  prompt: z.string().trim().min(10).max(500),
+});
+
+export const reviewQuestionDecisionSchema = z.object({
+  decision: z.enum(['approved', 'rejected']),
+  review_note: optionalText(2000),
+});
+
+export const managementLevelSchema = z.object({
+  level: z.union([z.literal(2), z.literal(3), z.null()]),
+});
+
+export const reportReviewSchema = z.object({
+  decision: z.enum(['resolved', 'dismissed']),
+  review_note: optionalText(2000),
+});
+
 export const uploadSignSchema = z.object({
   purpose: z.enum(['avatar', 'submission', 'event_photo', 'comment_image']),
   content_type: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'video/mp4', 'video/webm']),
@@ -58,4 +81,3 @@ export function parseLimit(raw: string | undefined, fallback = 50, maximum = 100
   if (!Number.isInteger(value) || value < 1) return fallback;
   return Math.min(value, maximum);
 }
-

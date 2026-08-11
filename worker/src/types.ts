@@ -22,6 +22,9 @@ export interface AppEnv {
   Variables: {
     accessToken: string;
     user: User;
+    profileStatus: 'pending' | 'active' | 'suspended' | 'rejected' | 'deleted';
+    roles: Array<'user' | 'editor' | 'moderator' | 'admin'>;
+    managementLevel: 1 | 2 | 3 | null;
   };
 }
 
@@ -32,4 +35,3 @@ export interface ApiErrorBody {
     details?: unknown;
   };
 }
-

@@ -30,15 +30,35 @@ npx supabase db push
 
 ### 首位管理员
 
-先正常注册账号，再在 Supabase SQL Editor 手工授予：
+先正常注册并确认邮箱，再从 `Authentication -> Users` 复制用户 UUID，在 Supabase SQL Editor 完成首位管理员引导：
 
 ```sql
+begin;
+
+update public.profiles
+set status = 'active'
+where user_id = '<AUTH_USER_UUID>';
+
 insert into public.user_roles (user_id, role)
 values ('<AUTH_USER_UUID>', 'admin')
 on conflict do nothing;
+
+commit;
 ```
 
-角色不能放在用户可修改的 metadata 或 profile 字段中。
+后续账号由网站内的“审核”工作台批准，不再执行手工 SQL。角色不能放在用户可修改的 metadata 或 profile 字段中。
+
+迁移只会让“迁移之后注册的新账号”默认进入待审核，不会突然锁定已有用户。若首位管理员建立后需要让所有现有普通账号重新审核，可再执行：
+
+```sql
+update public.profiles p
+set status = 'pending'
+where status = 'active'
+  and not exists (
+    select 1 from public.user_roles r
+    where r.user_id = p.user_id and r.role = 'admin'
+  );
+```
 
 ## 2. R2
 
@@ -89,6 +109,8 @@ Worker 的 Cloudflare API Token 至少需要 Workers Scripts、Routes、R2 Bindi
 - `npx wrangler deploy --dry-run`：Worker 打包与 bindings。
 - 从三个正式 Origin 各做一次 CORS 请求；任意其他 Origin 必须失败。
 - 用普通用户确认不能读取他人收藏、不能直接创建 `pending` 投稿、不能调用审核 RPC。
+- 用新注册用户确认邮箱后仍为 `pending`，不能评论或投稿；管理员批准后立即解锁。
+- 用管理员确认可以看到账号申请和投稿申请，批准投稿后公共活动 API 能返回新活动。
 - 上传错误大小和伪装扩展名文件，确认对象被删除且媒体记录进入 `quarantined`。
 
 ## 6. 运维

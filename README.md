@@ -17,13 +17,14 @@
 
 ## 已实现
 
-- 注册后自动创建 `profiles` 和默认 `user` 角色。
+- 注册后自动创建待审核 `profiles` 和默认 `user` 角色；邮箱确认后仍需管理员批准才能评论和投稿。
 - 一个 `events` 表，通过 `event_sites` 同时投放到一个或多个网站。
 - `event_people` 单独描述“谁参与”，不与“在哪个站展示”混用。
 - 评论按 `site_id + event_id` 隔离，数据库强制最多两层回复。
 - 评论点赞唯一键防重复；活动收藏不含 `site_id`，因此跨站共享。
 - 投稿只能经 Worker + Turnstile 进入 `pending`；浏览器不能绕过验证直接提交待审数据。
 - 审核 RPC 在一个数据库事务中完成批准、拒绝或合并；批准后才创建正式活动。
+- 管理员 API 可列出并审核账号申请与投稿申请；前端审核工作台只对 `admin` 可见。
 - R2 15 分钟签名直传，限制用途、MIME、大小和单次写入；完成时复查实际大小、元数据和文件魔数。
 - 用户级 Cloudflare Rate Limiting；举报、封禁和审核审计表已预留。
 
@@ -85,6 +86,7 @@ SITE_ID=ayg | zyl | duo
 `SUPABASE_SECRET_KEY`、R2 密钥和 `TURNSTILE_SECRET_KEY` 只能进入 Worker Secret。
 
 接口见 [API 契约](docs/api.md)，三个网站的接入方式见 [前端接入说明](docs/frontend-integration.md)。
+邮箱确认注册的 Supabase、SMTP、邮件模板和 Turnstile 配置见 [邮箱确认登录配置](docs/auth-email-setup.md)。
 
 ## 当前登录阶段
 

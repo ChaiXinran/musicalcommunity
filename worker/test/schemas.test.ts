@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { submissionSchema, uploadSignSchema } from '../src/schemas';
+import { accountReviewSchema, managementLevelSchema, reportReviewSchema, reviewQuestionSchema, submissionSchema, uploadSignSchema } from '../src/schemas';
 
 describe('submissionSchema', () => {
   const valid = {
@@ -34,3 +34,26 @@ describe('uploadSignSchema', () => {
   });
 });
 
+describe('accountReviewSchema', () => {
+  it('accepts account approval and rejection only', () => {
+    expect(accountReviewSchema.safeParse({ decision: 'approved' }).success).toBe(true);
+    expect(accountReviewSchema.safeParse({ decision: 'rejected', review_note: '资料不完整' }).success).toBe(true);
+    expect(accountReviewSchema.safeParse({ decision: 'merged' }).success).toBe(false);
+  });
+});
+
+describe('management review schemas', () => {
+  it('accepts only assignable management levels', () => {
+    expect(managementLevelSchema.safeParse({ level: 2 }).success).toBe(true);
+    expect(managementLevelSchema.safeParse({ level: 3 }).success).toBe(true);
+    expect(managementLevelSchema.safeParse({ level: null }).success).toBe(true);
+    expect(managementLevelSchema.safeParse({ level: 1 }).success).toBe(false);
+  });
+
+  it('validates question and report decisions', () => {
+    expect(reviewQuestionSchema.safeParse({ prompt: '请说明你会如何参与社区讨论并维护良好氛围。' }).success).toBe(true);
+    expect(reviewQuestionSchema.safeParse({ prompt: '太短' }).success).toBe(false);
+    expect(reportReviewSchema.safeParse({ decision: 'resolved' }).success).toBe(true);
+    expect(reportReviewSchema.safeParse({ decision: 'approved' }).success).toBe(false);
+  });
+});
