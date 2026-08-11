@@ -45,7 +45,7 @@ app.get('/v1/events', async (c) => {
   const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 50) || 50, 1), 100);
   let query = publicClient(c.env)
     .from('event_sites')
-    .select('site_id,event:events(id,slug,title,category,start_time,end_time,city,country,latitude,longitude,description,source_url,venue:venues(id,name,address))')
+    .select('site_id,event:events(id,slug,title,category,start_time,end_time,city,country,latitude,longitude,description,source_url,metadata,venue:venues(id,name,address),people:event_people(person_id,role),sites:event_sites(site_id))')
     .eq('site_id', siteId)
     .order('start_time', { referencedTable: 'events', ascending: false })
     .limit(limit);
