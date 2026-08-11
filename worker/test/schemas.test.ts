@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { accountReviewSchema, managementLevelSchema, reportReviewSchema, reviewQuestionSchema, submissionSchema, uploadSignSchema } from '../src/schemas';
+import { accountReviewSchema, banAppealReviewSchema, banAppealSchema, managementLevelSchema, reportReviewSchema, reportSubmissionSchema, reviewQuestionSchema, submissionSchema, uploadSignSchema } from '../src/schemas';
 
 describe('submissionSchema', () => {
   const valid = {
@@ -53,7 +53,21 @@ describe('management review schemas', () => {
   it('validates question and report decisions', () => {
     expect(reviewQuestionSchema.safeParse({ prompt: '请说明你会如何参与社区讨论并维护良好氛围。' }).success).toBe(true);
     expect(reviewQuestionSchema.safeParse({ prompt: '太短' }).success).toBe(false);
-    expect(reportReviewSchema.safeParse({ decision: 'resolved' }).success).toBe(true);
+    expect(reportReviewSchema.safeParse({ decision: 'upheld' }).success).toBe(true);
     expect(reportReviewSchema.safeParse({ decision: 'approved' }).success).toBe(false);
+  });
+
+  it('requires exactly one report subject', () => {
+    expect(reportSubmissionSchema.safeParse({ comment_id: '10000000-0000-4000-8000-000000000001' }).success).toBe(true);
+    expect(reportSubmissionSchema.safeParse({ reported_user_id: '10000000-0000-4000-8000-000000000001' }).success).toBe(true);
+    expect(reportSubmissionSchema.safeParse({}).success).toBe(false);
+    expect(reportSubmissionSchema.safeParse({ comment_id: '10000000-0000-4000-8000-000000000001', reported_user_id: '10000000-0000-4000-8000-000000000002' }).success).toBe(false);
+  });
+
+  it('validates ban appeals and rejected-appeal fandom labels', () => {
+    expect(banAppealSchema.safeParse({ message: '我认为本次封禁存在误会，请管理员重新核查相关上下文。' }).success).toBe(true);
+    expect(banAppealReviewSchema.safeParse({ decision: 'accepted' }).success).toBe(true);
+    expect(banAppealReviewSchema.safeParse({ decision: 'rejected', fandom: 'ayanga' }).success).toBe(true);
+    expect(banAppealReviewSchema.safeParse({ decision: 'rejected' }).success).toBe(false);
   });
 });

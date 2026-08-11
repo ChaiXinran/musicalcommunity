@@ -1,6 +1,6 @@
 begin;
 
-select plan(41);
+select plan(52);
 
 select has_table('public', 'profiles', 'profiles table exists');
 select has_table('public', 'sites', 'sites table exists');
@@ -172,13 +172,29 @@ select lives_ok(
 );
 
 set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000002';
-insert into public.reports (reporter_id, comment_id, reason, status)
-values (
-  '10000000-0000-0000-0000-000000000002',
+select public.submit_report(
   (select id from public.comments where content = 'root'),
+  null,
   'test report',
-  'open'
+  ''
 );
+
+reset role;
+
+select is(
+  (select status::text from public.profiles where user_id = '10000000-0000-0000-0000-000000000001'),
+  'pending',
+  'an ordinary report immediately freezes the reported account'
+);
+
+select is(
+  (select status::text from public.comments where content = 'root'),
+  'hidden',
+  'an ordinary comment report immediately hides the reported comment'
+);
+
+set local role authenticated;
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000002';
 
 select is(
   (select count(*)::integer from public.notifications
@@ -198,18 +214,30 @@ select is(
 select is(
   public.review_report(
     (select id from public.reports where reporter_id = '10000000-0000-0000-0000-000000000002' and reason = 'test report'),
-    'resolved'
+    'dismissed'
   )::text,
-  'resolved',
-  'a level 3 administrator can resolve a report'
+  'dismissed',
+  'a level 3 administrator can dismiss a report'
+);
+
+select is(
+  (select status::text from public.profiles where user_id = '10000000-0000-0000-0000-000000000001'),
+  'active',
+  'dismissing a report restores the reported account'
+);
+
+select is(
+  (select status::text from public.comments where content = 'root'),
+  'published',
+  'dismissing a report restores the hidden comment'
 );
 
 set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000002';
 select is(
   (select count(*)::integer from public.notifications
-    where user_id = '10000000-0000-0000-0000-000000000002' and title = '举报已处理'),
+    where user_id = '10000000-0000-0000-0000-000000000002' and title = '举报已关闭'),
   1,
-  'report resolution automatically notifies its reporter'
+  'report dismissal automatically notifies its reporter'
 );
 
 set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000004';
@@ -344,6 +372,63 @@ select is(
     where s.id = '40000000-0000-0000-0000-000000000003' and es.site_id = 'ayg'),
   1,
   'approval publishes the event to every proposed site'
+);
+
+select is(
+  (public.submit_report(
+    (select id from public.comments where content = 'approved user comment'),
+    null,
+    'administrator direct report',
+    ''
+  )).status::text,
+  'resolved',
+  'an administrator report is resolved immediately without another review'
+);
+
+select is(
+  (select status::text from public.profiles where user_id = '10000000-0000-0000-0000-000000000004'),
+  'suspended',
+  'an administrator report immediately suspends the target account'
+);
+
+select is(
+  (select status::text from public.comments where user_id = '10000000-0000-0000-0000-000000000004'),
+  'deleted',
+  'an administrator report permanently deletes the target comment'
+);
+
+select is(
+  (select count(*)::integer from public.user_bans where user_id = '10000000-0000-0000-0000-000000000004' and revoked_at is null and ends_at is null),
+  1,
+  'an administrator report creates a permanent application-level email ban'
+);
+
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000004';
+select is(
+  (public.submit_ban_appeal('I believe the permanent ban was mistaken and request a complete review.')).status::text,
+  'pending',
+  'a permanently banned user can submit one appeal'
+);
+
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000006';
+select is(
+  (public.review_ban_appeal(
+    (select id from public.ban_appeals where user_id = '10000000-0000-0000-0000-000000000004'),
+    'rejected',
+    'The original decision remains in effect.',
+    'ayanga'
+  )).status::text,
+  'rejected',
+  'an administrator can reject an appeal with a required fandom label'
+);
+
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000004';
+select is(
+  (select metadata->>'result_image' from public.notifications
+    where user_id = '10000000-0000-0000-0000-000000000004' and title = '申诉被拒绝'
+    order by created_at desc limit 1),
+  '/assets/moderation/appeal-ayanga.jpg',
+  'a rejected appeal notification includes the selected result image'
 );
 
 select * from finish();

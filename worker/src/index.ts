@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { currentAccess, managementLevel, requireApprovedUser, requireLevel1, requireLevel2, requireLevel3, requireUser } from './auth';
 import { ApiError, errorResponse } from './errors';
-import { accountReviewSchema, managementLevelSchema, parseLimit, reportReviewSchema, reviewQuestionDecisionSchema, reviewQuestionSchema, reviewSchema, submissionSchema, uploadCompleteSchema, uploadSignSchema } from './schemas';
+import { accountReviewSchema, banAppealReviewSchema, banAppealSchema, managementLevelSchema, parseLimit, reportReviewSchema, reportSubmissionSchema, reviewQuestionDecisionSchema, reviewQuestionSchema, reviewSchema, submissionSchema, uploadCompleteSchema, uploadSignSchema } from './schemas';
 import { adminClient, publicClient, userClient } from './supabase';
 import { verifyTurnstile } from './turnstile';
 import type { AppEnv } from './types';
@@ -74,11 +74,29 @@ app.get('/v1/me', requireUser, async (c) => {
     .eq('user_id', c.get('user').id)
     .single();
   if (error || !profile) throw new ApiError(502, 'database_error', '无法读取账号资料', error?.message);
-  const { data: application } = await adminClient(c.env)
+  const admin = adminClient(c.env);
+  const { data: application } = await admin
     .from('account_applications')
     .select('question_snapshot,answer,status,review_note,submitted_at,reviewed_at')
     .eq('user_id', c.get('user').id)
     .maybeSingle();
+  const { data: bans } = await admin.from('user_bans')
+    .select('id,report_id,reason,starts_at,ends_at,created_at')
+    .eq('user_id', c.get('user').id)
+    .is('revoked_at', null)
+    .is('ends_at', null)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  const activeBan = bans?.[0] ?? null;
+  const { data: appeals } = activeBan
+    ? await admin.from('ban_appeals').select('id,ban_id,message,status,review_note,fandom,created_at,reviewed_at').eq('ban_id', activeBan.id).limit(1)
+    : { data: [] };
+  const { data: frozenReports } = await admin.from('reports')
+    .select('id,comment_id,reason,status,created_at')
+    .eq('subject_user_id', c.get('user').id)
+    .in('status', ['open', 'reviewing'])
+    .order('created_at', { ascending: false })
+    .limit(1);
   return c.json({
     data: {
       user: { id: c.get('user').id, email: c.get('user').email ?? null },
@@ -86,6 +104,7 @@ app.get('/v1/me', requireUser, async (c) => {
       roles: access.roles,
       management_level: level,
       application: application ?? null,
+      moderation: { active_report: frozenReports?.[0] ?? null, active_ban: activeBan, appeal: appeals?.[0] ?? null },
       capabilities: {
         comment: access.status === 'active',
         submit: access.status === 'active',
@@ -99,6 +118,27 @@ app.get('/v1/me', requireUser, async (c) => {
       },
     },
   });
+});
+
+app.post('/v1/reports', requireApprovedUser, async (c) => {
+  const parsed = reportSubmissionSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) throw new ApiError(422, 'validation_failed', '举报参数格式错误', parsed.error.flatten());
+  const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('submit_report', {
+    p_comment_id: parsed.data.comment_id ?? null,
+    p_reported_user_id: parsed.data.reported_user_id ?? null,
+    p_reason: parsed.data.reason,
+    p_details: parsed.data.details,
+  });
+  if (error) throw new ApiError(error.code === '42501' ? 403 : 409, 'report_submit_failed', '无法提交举报', error.message);
+  return c.json({ data: { id: data.id, status: data.status, automatic_action: data.automatic_action } }, 201);
+});
+
+app.post('/v1/appeals', requireUser, async (c) => {
+  const parsed = banAppealSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) throw new ApiError(422, 'validation_failed', '申诉内容格式错误', parsed.error.flatten());
+  const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('submit_ban_appeal', { p_message: parsed.data.message });
+  if (error) throw new ApiError(error.code === '42501' ? 403 : 409, 'appeal_submit_failed', '无法提交申诉', error.message);
+  return c.json({ data }, 201);
 });
 
 app.get('/v1/notifications', requireUser, async (c) => {
@@ -242,12 +282,12 @@ app.get('/v1/admin/reports', requireLevel3, async (c) => {
   const limit = parseLimit(c.req.query('limit'), 50, 100);
   const { data: reports, error } = await adminClient(c.env)
     .from('reports')
-    .select('id,reporter_id,comment_id,reported_user_id,reason,details,status,created_at,comment:comments(id,content,user_id,site_id,event_id)')
+    .select('id,reporter_id,comment_id,reported_user_id,subject_user_id,reason,details,status,automatic_action,created_at,comment:comments(id,content,user_id,site_id,event_id)')
     .in('status', ['open', 'reviewing'])
     .order('created_at', { ascending: true })
     .limit(limit);
   if (error) throw new ApiError(502, 'database_error', '无法读取举报列表', error.message);
-  const userIds = [...new Set((reports ?? []).flatMap((item) => [item.reporter_id, item.reported_user_id].filter(Boolean)))] as string[];
+  const userIds = [...new Set((reports ?? []).flatMap((item) => [item.reporter_id, item.subject_user_id].filter(Boolean)))] as string[];
   const { data: profiles } = userIds.length
     ? await adminClient(c.env).from('profiles').select('user_id,display_name').in('user_id', userIds)
     : { data: [] };
@@ -255,7 +295,7 @@ app.get('/v1/admin/reports', requireLevel3, async (c) => {
   return c.json({ data: (reports ?? []).map((item) => ({
     ...item,
     reporter_name: names.get(item.reporter_id) ?? '社区用户',
-    reported_user_name: item.reported_user_id ? names.get(item.reported_user_id) ?? '社区用户' : null,
+    reported_user_name: names.get(item.subject_user_id) ?? '社区用户',
   })) });
 });
 
@@ -269,6 +309,38 @@ app.post('/v1/admin/reports/:id/review', requireLevel3, async (c) => {
   });
   if (error) throw new ApiError(error.code === '42501' ? 403 : 409, 'report_review_failed', '无法处理该举报', error.message);
   return c.json({ data: { id: c.req.param('id'), status: data } });
+});
+
+app.get('/v1/admin/appeals', requireLevel3, async (c) => {
+  const limit = parseLimit(c.req.query('limit'), 50, 100);
+  const admin = adminClient(c.env);
+  const { data: appeals, error } = await admin.from('ban_appeals')
+    .select('id,ban_id,user_id,message,status,created_at,ban:user_bans(id,reason,report_id,created_at)')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true })
+    .limit(limit);
+  if (error) throw new ApiError(502, 'database_error', '无法读取封禁申诉', error.message);
+  const userIds = [...new Set((appeals ?? []).map((item) => item.user_id))] as string[];
+  const [{ data: profiles }, { data: authUsers }] = await Promise.all([
+    userIds.length ? admin.from('profiles').select('user_id,display_name').in('user_id', userIds) : Promise.resolve({ data: [] }),
+    Promise.all(userIds.map((id) => admin.auth.admin.getUserById(id))).then((items) => ({ data: items.map((item) => item.data.user) })),
+  ]);
+  const names = new Map((profiles ?? []).map((profile) => [profile.user_id, profile.display_name]));
+  const emails = new Map((authUsers ?? []).map((user) => [user?.id, user?.email ?? null]));
+  return c.json({ data: (appeals ?? []).map((item) => ({ ...item, display_name: names.get(item.user_id) ?? '社区用户', email: emails.get(item.user_id) ?? null })) });
+});
+
+app.post('/v1/admin/appeals/:id/review', requireLevel3, async (c) => {
+  const parsed = banAppealReviewSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) throw new ApiError(422, 'validation_failed', '申诉审核参数格式错误', parsed.error.flatten());
+  const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('review_ban_appeal', {
+    p_appeal_id: c.req.param('id'),
+    p_decision: parsed.data.decision,
+    p_review_note: parsed.data.review_note ?? null,
+    p_fandom: parsed.data.fandom ?? null,
+  });
+  if (error) throw new ApiError(error.code === '42501' ? 403 : 409, 'appeal_review_failed', '无法审核该申诉', error.message);
+  return c.json({ data });
 });
 
 app.get('/v1/admin/questions', requireLevel2, async (c) => {

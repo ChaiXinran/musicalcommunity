@@ -56,8 +56,36 @@ export const managementLevelSchema = z.object({
 });
 
 export const reportReviewSchema = z.object({
-  decision: z.enum(['resolved', 'dismissed']),
+  decision: z.enum(['upheld', 'dismissed']),
   review_note: optionalText(2000),
+});
+
+export const reportSubmissionSchema = z.object({
+  comment_id: z.uuid().optional().nullable(),
+  reported_user_id: z.uuid().optional().nullable(),
+  reason: z.string().trim().min(1).max(100).default('快捷举报'),
+  details: z.string().trim().max(2000).default(''),
+}).superRefine((value, context) => {
+  if (Number(Boolean(value.comment_id)) + Number(Boolean(value.reported_user_id)) !== 1) {
+    context.addIssue({ code: 'custom', path: ['comment_id'], message: '必须且只能举报一条评论或一个账号' });
+  }
+});
+
+export const banAppealSchema = z.object({
+  message: z.string().trim().min(20).max(5000),
+});
+
+export const banAppealReviewSchema = z.object({
+  decision: z.enum(['accepted', 'rejected']),
+  review_note: optionalText(2000),
+  fandom: z.enum(['ayanga', 'zhengyunlong']).optional().nullable(),
+}).superRefine((value, context) => {
+  if (value.decision === 'rejected' && !value.fandom) {
+    context.addIssue({ code: 'custom', path: ['fandom'], message: '拒绝申诉时必须选择毒唯归属' });
+  }
+  if (value.decision === 'accepted' && value.fandom) {
+    context.addIssue({ code: 'custom', path: ['fandom'], message: '接受申诉时不能设置毒唯归属' });
+  }
 });
 
 export const uploadSignSchema = z.object({
