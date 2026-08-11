@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { currentAccess, managementLevel, requireApprovedUser, requireLevel1, requireLevel2, requireLevel3, requireUser } from './auth';
 import { ApiError, errorResponse } from './errors';
-import { accountReviewSchema, banAppealReviewSchema, banAppealSchema, managementLevelSchema, parseLimit, reportReviewSchema, reportSubmissionSchema, reviewQuestionDecisionSchema, reviewQuestionSchema, reviewSchema, siteBackgroundSchema, submissionSchema, uploadCompleteSchema, uploadSignSchema } from './schemas';
+import { accountReviewSchema, announcementSchema, banAppealReviewSchema, banAppealSchema, managementLevelSchema, parseLimit, reportReviewSchema, reportSubmissionSchema, reviewQuestionDecisionSchema, reviewQuestionSchema, reviewSchema, siteBackgroundSchema, submissionSchema, uploadCompleteSchema, uploadSignSchema } from './schemas';
 import { adminClient, publicClient, userClient } from './supabase';
 import { verifyTurnstile } from './turnstile';
 import type { AppEnv } from './types';
@@ -130,6 +130,7 @@ app.get('/v1/me', requireUser, async (c) => {
         review_questions: access.status === 'active' && level === 1,
         manage_roles: access.status === 'active' && level === 1,
         manage_site_background: access.status === 'active' && level === 1,
+        manage_announcements: access.status === 'active' && level === 1,
       },
     },
   });
@@ -154,6 +155,32 @@ app.post('/v1/appeals', requireUser, async (c) => {
   const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('submit_ban_appeal', { p_message: parsed.data.message });
   if (error) throw new ApiError(error.code === '42501' ? 403 : 409, 'appeal_submit_failed', '无法提交申诉', error.message);
   return c.json({ data }, 201);
+});
+
+app.get('/v1/announcements', async (c) => {
+  let audience: 'guest' | 'registered' | 'banned' = 'guest';
+  const token = /^Bearer\s+(.+)$/i.exec(c.req.header('Authorization') || '')?.[1];
+  if (token) {
+    const { data } = await publicClient(c.env).auth.getUser(token);
+    if (data.user) {
+      const { data: activeBans } = await adminClient(c.env).from('user_bans')
+        .select('id')
+        .eq('user_id', data.user.id)
+        .is('revoked_at', null)
+        .is('ends_at', null)
+        .limit(1);
+      audience = activeBans?.length ? 'banned' : 'registered';
+    }
+  }
+  const limit = parseLimit(c.req.query('limit'), 50, 100);
+  const { data, error } = await adminClient(c.env).from('site_announcements')
+    .select('id,title,message,audience,published_at,updated_at')
+    .in('audience', ['all', audience])
+    .order('published_at', { ascending: false })
+    .limit(limit);
+  if (error) throw new ApiError(502, 'database_error', '无法读取站内通知', error.message);
+  c.header('Cache-Control', 'private, max-age=30');
+  return c.json({ data: { items: data ?? [], audience } });
 });
 
 app.get('/v1/notifications', requireUser, async (c) => {
@@ -468,6 +495,52 @@ app.post('/v1/admin/site-background', requireLevel1, async (c) => {
     background_url: `${c.env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${media.object_key}`,
     updated_at: updatedAt,
   } });
+});
+
+app.get('/v1/admin/announcements', requireLevel1, async (c) => {
+  const limit = parseLimit(c.req.query('limit'), 100, 100);
+  const { data, error } = await adminClient(c.env).from('site_announcements')
+    .select('id,title,message,audience,published_at,created_at,updated_at')
+    .order('published_at', { ascending: false })
+    .limit(limit);
+  if (error) throw new ApiError(502, 'database_error', '无法读取已发布通知', error.message);
+  return c.json({ data: data ?? [] });
+});
+
+app.post('/v1/admin/announcements', requireLevel1, async (c) => {
+  const parsed = announcementSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) throw new ApiError(422, 'validation_failed', '通知内容格式错误', parsed.error.flatten());
+  const userId = c.get('user').id;
+  const { data, error } = await adminClient(c.env).from('site_announcements')
+    .insert({ ...parsed.data, created_by: userId, updated_by: userId })
+    .select('id,title,message,audience,published_at,created_at,updated_at')
+    .single();
+  if (error) throw new ApiError(502, 'database_error', '无法发布通知', error.message);
+  return c.json({ data }, 201);
+});
+
+app.post('/v1/admin/announcements/:id/edit', requireLevel1, async (c) => {
+  const parsed = announcementSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) throw new ApiError(422, 'validation_failed', '通知内容格式错误', parsed.error.flatten());
+  const { data, error } = await adminClient(c.env).from('site_announcements')
+    .update({ ...parsed.data, updated_by: c.get('user').id })
+    .eq('id', c.req.param('id'))
+    .select('id,title,message,audience,published_at,created_at,updated_at')
+    .maybeSingle();
+  if (error) throw new ApiError(502, 'database_error', '无法修改通知', error.message);
+  if (!data) throw new ApiError(404, 'announcement_not_found', '通知不存在');
+  return c.json({ data });
+});
+
+app.post('/v1/admin/announcements/:id/delete', requireLevel1, async (c) => {
+  const { data, error } = await adminClient(c.env).from('site_announcements')
+    .delete()
+    .eq('id', c.req.param('id'))
+    .select('id')
+    .maybeSingle();
+  if (error) throw new ApiError(502, 'database_error', '无法删除通知', error.message);
+  if (!data) throw new ApiError(404, 'announcement_not_found', '通知不存在');
+  return c.json({ data });
 });
 
 app.post('/v1/uploads/sign', requireUser, async (c) => {

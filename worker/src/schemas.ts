@@ -106,6 +106,12 @@ export const uploadCompleteSchema = z.object({ media_id: z.uuid() });
 
 export const siteBackgroundSchema = z.object({ media_id: z.uuid() });
 
+export const announcementSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  message: z.string().trim().min(1).max(10000),
+  audience: z.enum(['guest', 'registered', 'banned', 'all']),
+});
+
 export function parseLimit(raw: string | undefined, fallback = 50, maximum = 100): number {
   const value = Number(raw ?? fallback);
   if (!Number.isInteger(value) || value < 1) return fallback;
