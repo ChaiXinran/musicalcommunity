@@ -89,7 +89,7 @@ export const banAppealReviewSchema = z.object({
 });
 
 export const uploadSignSchema = z.object({
-  purpose: z.enum(['avatar', 'submission', 'event_photo', 'comment_image']),
+  purpose: z.enum(['avatar', 'submission', 'event_photo', 'comment_image', 'site_background']),
   content_type: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'video/mp4', 'video/webm']),
   byte_size: z.number().int().positive().max(100 * 1024 * 1024),
   submission_id: z.uuid().optional().nullable(),
@@ -103,6 +103,8 @@ export const uploadSignSchema = z.object({
 });
 
 export const uploadCompleteSchema = z.object({ media_id: z.uuid() });
+
+export const siteBackgroundSchema = z.object({ media_id: z.uuid() });
 
 export function parseLimit(raw: string | undefined, fallback = 50, maximum = 100): number {
   const value = Number(raw ?? fallback);

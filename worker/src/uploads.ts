@@ -8,6 +8,7 @@ const MIME_RULES = {
   submission: { max: 100 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'video/mp4', 'video/webm'] },
   event_photo: { max: 25 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp', 'image/avif'] },
   comment_image: { max: 8 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp', 'image/avif'] },
+  site_background: { max: 25 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp', 'image/avif'] },
 } as const;
 
 const EXTENSIONS: Record<string, string> = {
@@ -19,7 +20,7 @@ const EXTENSIONS: Record<string, string> = {
   'video/webm': 'webm',
 };
 
-const PREFIXES = { avatar: 'avatars', submission: 'submissions', event_photo: 'event-photos', comment_image: 'comment-images' } as const;
+const PREFIXES = { avatar: 'avatars', submission: 'submissions', event_photo: 'event-photos', comment_image: 'comment-images', site_background: 'site-backgrounds' } as const;
 
 export interface SignUploadInput {
   purpose: keyof typeof MIME_RULES;

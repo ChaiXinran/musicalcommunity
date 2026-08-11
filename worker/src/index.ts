@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { currentAccess, managementLevel, requireApprovedUser, requireLevel1, requireLevel2, requireLevel3, requireUser } from './auth';
 import { ApiError, errorResponse } from './errors';
-import { accountReviewSchema, banAppealReviewSchema, banAppealSchema, managementLevelSchema, parseLimit, reportReviewSchema, reportSubmissionSchema, reviewQuestionDecisionSchema, reviewQuestionSchema, reviewSchema, submissionSchema, uploadCompleteSchema, uploadSignSchema } from './schemas';
+import { accountReviewSchema, banAppealReviewSchema, banAppealSchema, managementLevelSchema, parseLimit, reportReviewSchema, reportSubmissionSchema, reviewQuestionDecisionSchema, reviewQuestionSchema, reviewSchema, siteBackgroundSchema, submissionSchema, uploadCompleteSchema, uploadSignSchema } from './schemas';
 import { adminClient, publicClient, userClient } from './supabase';
 import { verifyTurnstile } from './turnstile';
 import type { AppEnv } from './types';
@@ -37,6 +37,20 @@ app.get('/v1/sites', async (c) => {
   if (error) throw new ApiError(502, 'database_error', '无法读取站点', error.message);
   c.header('Cache-Control', 'public, max-age=300');
   return c.json({ data });
+});
+
+app.get('/v1/site-settings/background', async (c) => {
+  const { data, error } = await adminClient(c.env)
+    .from('site_settings')
+    .select('object_key,updated_at')
+    .eq('key', 'global_background')
+    .maybeSingle();
+  if (error) throw new ApiError(502, 'database_error', '无法读取网站背景设置', error.message);
+  c.header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+  return c.json({ data: {
+    background_url: data?.object_key ? `${c.env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${data.object_key}` : null,
+    updated_at: data?.updated_at ?? null,
+  } });
 });
 
 app.get('/v1/events', async (c) => {
@@ -115,6 +129,7 @@ app.get('/v1/me', requireUser, async (c) => {
         submit_questions: access.status === 'active' && level !== null && level <= 2,
         review_questions: access.status === 'active' && level === 1,
         manage_roles: access.status === 'active' && level === 1,
+        manage_site_background: access.status === 'active' && level === 1,
       },
     },
   });
@@ -426,9 +441,44 @@ app.post('/v1/admin/users/:id/management-level', requireLevel1, async (c) => {
   return c.json({ data: { user_id: c.req.param('id'), management_level: data } });
 });
 
+app.post('/v1/admin/site-background', requireLevel1, async (c) => {
+  const parsed = siteBackgroundSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) throw new ApiError(422, 'validation_failed', '网站背景参数格式错误', parsed.error.flatten());
+  const admin = adminClient(c.env);
+  const { data: media, error: mediaError } = await admin.from('media')
+    .select('id,object_key,purpose,status')
+    .eq('id', parsed.data.media_id)
+    .eq('owner_id', c.get('user').id)
+    .maybeSingle();
+  if (mediaError || !media || media.purpose !== 'site_background' || media.status !== 'available') {
+    throw new ApiError(409, 'background_media_unavailable', '背景图片尚未完成上传或不可使用', mediaError?.message);
+  }
+  const updatedAt = new Date().toISOString();
+  const { error } = await admin.from('site_settings').upsert({
+    key: 'global_background',
+    media_id: media.id,
+    object_key: media.object_key,
+    updated_by: c.get('user').id,
+    updated_at: updatedAt,
+  }, { onConflict: 'key' });
+  if (error) throw new ApiError(502, 'database_error', '无法保存网站背景设置', error.message);
+  return c.json({ data: {
+    media_id: media.id,
+    object_key: media.object_key,
+    background_url: `${c.env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${media.object_key}`,
+    updated_at: updatedAt,
+  } });
+});
+
 app.post('/v1/uploads/sign', requireUser, async (c) => {
   const parsed = uploadSignSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '上传参数格式错误', parsed.error.flatten());
+  if (parsed.data.purpose === 'site_background') {
+    const access = await currentAccess(c);
+    if (access.status !== 'active' || managementLevel(access.roles) !== 1) {
+      throw new ApiError(403, 'level_1_required', '只有一级管理员可以上传网站背景');
+    }
+  }
   const user = c.get('user');
   const rate = await c.env.UPLOAD_RATE_LIMITER.limit({ key: user.id });
   if (!rate.success) throw new ApiError(429, 'rate_limited', '上传请求过于频繁，请稍后再试');
