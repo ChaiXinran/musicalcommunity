@@ -1,0 +1,43 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "musical-community-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-11",
+  "workers_dev": true,
+  "preview_urls": true,
+  "vars": {
+    "SUPABASE_URL": "https://epqdptjgpqtzwlybnbjf.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_5S2HpxRQdHeAW1ss1kz4JA_NydBQYCt",
+    "R2_ACCOUNT_ID": "086af89e5f3ee88fc689b51c37354d43",
+    "R2_BUCKET_NAME": "musical-community",
+    "MEDIA_PUBLIC_BASE_URL": "https://media.ranyechai.site",
+    "ALLOWED_ORIGINS": "https://aygmusical.ranyechai.site,https://zyldl.ranyechai.site,https://musical.ranyechai.site,http://localhost:3000,http://localhost:3001,http://localhost:3002",
+    "TURNSTILE_ALLOWED_HOSTNAMES": "aygmusical.ranyechai.site,zyldl.ranyechai.site,musical.ranyechai.site"
+  },
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_BUCKET",
+      "bucket_name": "musical-community",
+      "preview_bucket_name": "musical-community-dev"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "SUBMISSION_RATE_LIMITER",
+      "namespace_id": "2101",
+      "simple": { "limit": 3, "period": 60 }
+    },
+    {
+      "name": "UPLOAD_RATE_LIMITER",
+      "namespace_id": "2102",
+      "simple": { "limit": 20, "period": 60 }
+    }
+  ],
+  "routes": [
+  {
+    "pattern": "api.ranyechai.site",
+    "custom_domain": true
+  }
+ ]
+}
+

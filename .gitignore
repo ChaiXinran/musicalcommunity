@@ -1,0 +1,12 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env
+.env.*
+!.env.example
+supabase/.branches/
+supabase/.temp/
+coverage/
+dist/
+*.log
+

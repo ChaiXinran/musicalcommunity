@@ -1,0 +1,80 @@
+{
+  "generatedAt": "2026-08-11T11:27:08.250Z",
+  "frontendDir": "D:\\play\\ycfmusical\\create\\event-earth\\event-earth-demo",
+  "migrationPath": "D:\\play\\ycfmusical\\create\\event-earth\\backend\\supabase\\migrations\\202608110002_import_historical_events.sql",
+  "counts": {
+    "sourceRecords": 454,
+    "sourceAyanga": 307,
+    "sourceZhengYunlong": 147,
+    "importedEvents": 447,
+    "venues": 300,
+    "eventSites": 899,
+    "eventPeople": 452,
+    "mappedLegacyIds": 452,
+    "sharedEvents": 5,
+    "skipped": 2
+  },
+  "sharedEvents": [
+    {
+      "id": "5f2ce3bc-2293-5c02-ace6-a4d482b5c8fb",
+      "title": "湖南卫视2018-2019跨年演唱会",
+      "startTime": "2018-12-31T12:00:00+08:00",
+      "legacyIds": [
+        "ayanga-2018-2a1322052d",
+        "zhengyunlong-2018-40a96159f0"
+      ]
+    },
+    {
+      "id": "11022bd1-1aa5-5cc5-bd25-eb8ceebd344d",
+      "title": "“我们剧场见”2019音乐剧明星集锦音乐会",
+      "startTime": "2019-07-03T12:00:00+08:00",
+      "legacyIds": [
+        "ayanga-2019-5c4b6c1e90",
+        "zhengyunlong-2019-13bd4d7f2d"
+      ]
+    },
+    {
+      "id": "47be4fb0-3899-581d-af62-bc70864aed22",
+      "title": "“我们剧场见”2019音乐剧明星集锦音乐会",
+      "startTime": "2019-07-11T12:00:00+08:00",
+      "legacyIds": [
+        "ayanga-2019-1b233c9e7d",
+        "zhengyunlong-2019-7823424e7c"
+      ]
+    },
+    {
+      "id": "d7d3ae5a-1c50-5892-9933-c0bf72f23da9",
+      "title": "“我们剧场见”2019音乐剧明星集锦音乐会",
+      "startTime": "2019-07-14T12:00:00+08:00",
+      "legacyIds": [
+        "ayanga-2019-5f76492530",
+        "zhengyunlong-2019-614c87865c"
+      ]
+    },
+    {
+      "id": "6caf659f-2a5d-5ed4-9ecc-f083a3f8cb82",
+      "title": "“我们剧场见”2019音乐剧明星集锦音乐会",
+      "startTime": "2019-07-19T12:00:00+08:00",
+      "legacyIds": [
+        "ayanga-2019-33245b5b5c",
+        "zhengyunlong-2019-39ecbfe429"
+      ]
+    }
+  ],
+  "skipped": [
+    {
+      "legacyId": "ayanga-unknown-4ddb49b8c8",
+      "personId": "ayanga",
+      "title": "V中文版×阿云嘎希腊雅典工作之旅",
+      "dateLabel": "2024-06（实际拍摄日未公开；物料6/20-6/27发布） 海外拍摄工作",
+      "reason": "missing_exact_date"
+    },
+    {
+      "legacyId": "zhengyunlong-unknown-4ea051b494",
+      "personId": "zhengyunlong",
+      "title": "又见桃花红",
+      "dateLabel": "2015（具体日期未检得） 未检得",
+      "reason": "missing_exact_date"
+    }
+  ]
+}

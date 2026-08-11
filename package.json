@@ -1,0 +1,26 @@
+{
+  "name": "musical-community-backend",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "worker"
+  ],
+  "scripts": {
+    "check": "npm run check --workspace worker",
+    "test": "npm run test --workspace worker",
+    "dev": "npm run dev --workspace worker",
+    "deploy": "npm run deploy --workspace worker",
+    "history:generate": "node scripts/generate-history-import.mjs",
+    "history:check": "node scripts/generate-history-import.mjs --check",
+    "db:start": "supabase start",
+    "db:reset": "supabase db reset --local",
+    "db:test": "supabase test db --local",
+    "db:lint": "supabase db lint --local --level error"
+  },
+  "devDependencies": {
+    "supabase": "^2.45.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

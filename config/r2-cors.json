@@ -1,0 +1,21 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": [
+          "https://aygmusical.ranyechai.site",
+          "https://zyldl.ranyechai.site",
+          "https://musical.ranyechai.site",
+          "http://localhost:3000",
+          "http://localhost:3001",
+          "http://localhost:3002"
+        ],
+        "methods": ["PUT", "HEAD"],
+        "headers": ["Content-Type", "If-None-Match"]
+      },
+      "exposeHeaders": ["ETag"],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}
+
