@@ -9,7 +9,11 @@ const coordinatePair = z.object({
 });
 
 export const submissionSchema = z.object({
-  proposed_sites: z.array(z.enum(['ayg', 'zyl', 'duo'])).min(1).max(3),
+  submission_scope: z.enum(['public', 'private']).default('public'),
+  submission_kind: z.enum(['create', 'edit']).default('create'),
+  target_event_id: z.uuid().optional().nullable(),
+  person_ids: z.array(z.enum(['ayg', 'zyl'])).max(2).default([]),
+  proposed_sites: z.array(z.enum(['ayg', 'zyl', 'duo'])).max(3).default(['duo']),
   title: z.string().trim().min(1).max(200),
   category: z.string().trim().min(1).max(80),
   start_time: z.iso.datetime({ offset: true }),
@@ -19,11 +23,21 @@ export const submissionSchema = z.object({
   country: optionalText(100),
   description: z.string().trim().max(10000).default(''),
   source_url: z.url().refine((url) => /^https?:\/\//.test(url), '只允许 http/https URL').optional().nullable(),
+  media_links: z.array(z.url()).max(20).default([]),
   payload_json: z.record(z.string(), z.unknown()).default({}),
   turnstile_token: z.string().min(1).max(2048),
 }).and(coordinatePair).superRefine((value, context) => {
   if (value.end_time && Date.parse(value.end_time) < Date.parse(value.start_time)) {
     context.addIssue({ code: 'custom', path: ['end_time'], message: 'end_time 不能早于 start_time' });
+  }
+  if (value.submission_scope === 'private' && value.submission_kind !== 'create') {
+    context.addIssue({ code: 'custom', path: ['submission_kind'], message: '私人投稿只支持添加活动' });
+  }
+  if (value.submission_kind === 'edit' && !value.target_event_id) {
+    context.addIssue({ code: 'custom', path: ['target_event_id'], message: '编辑投稿必须选择原有活动' });
+  }
+  if (value.submission_scope === 'public' && !value.person_ids.length) {
+    context.addIssue({ code: 'custom', path: ['person_ids'], message: '公开投稿至少选择一位人物' });
   }
 });
 

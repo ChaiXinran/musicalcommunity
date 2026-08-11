@@ -9,6 +9,50 @@ import { completeUpload, signUpload } from './uploads';
 
 const app = new Hono<AppEnv>();
 
+const publicMediaUrl = (env: AppEnv['Bindings'], objectKey?: string | null) =>
+  objectKey ? `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${objectKey}` : null;
+
+async function enrichPublishedEvents(env: AppEnv['Bindings'], events: any[]) {
+  const eventIds = events.map((event) => event?.id).filter(Boolean);
+  if (!eventIds.length) return events;
+  const admin = adminClient(env);
+  const [{ data: mediaRows }, { data: contributorRows }] = await Promise.all([
+    admin.from('event_media').select('event_id,sort_order,media:media(object_key,status,content_type)').in('event_id', eventIds).order('sort_order'),
+    admin.from('event_contributors').select('event_id,user_id,contribution_type,created_at').in('event_id', eventIds).order('created_at'),
+  ]);
+  const contributorIds = [...new Set((contributorRows ?? []).map((row: any) => row.user_id))];
+  const { data: profiles } = contributorIds.length
+    ? await admin.from('profiles').select('user_id,display_name,avatar_key').in('user_id', contributorIds)
+    : { data: [] };
+  const profileMap = new Map((profiles ?? []).map((profile: any) => [profile.user_id, profile]));
+  const mediaMap = new Map<string, string[]>();
+  for (const row of mediaRows ?? []) {
+    const media = Array.isArray((row as any).media) ? (row as any).media[0] : (row as any).media;
+    if (!media || media.status !== 'available' || !String(media.content_type || '').startsWith('image/')) continue;
+    const list = mediaMap.get((row as any).event_id) ?? [];
+    const url = publicMediaUrl(env, media.object_key);
+    if (url) list.push(url);
+    mediaMap.set((row as any).event_id, list);
+  }
+  const contributorMap = new Map<string, any[]>();
+  for (const row of contributorRows ?? []) {
+    const profile: any = profileMap.get((row as any).user_id) ?? {};
+    const list = contributorMap.get((row as any).event_id) ?? [];
+    list.push({
+      user_id: (row as any).user_id,
+      display_name: profile.display_name || '社区用户',
+      avatar_url: publicMediaUrl(env, profile.avatar_key),
+      contribution_type: (row as any).contribution_type,
+    });
+    contributorMap.set((row as any).event_id, list);
+  }
+  return events.map((event) => ({
+    ...event,
+    images: mediaMap.get(event.id) ?? [],
+    contributors: contributorMap.get(event.id) ?? [],
+  }));
+}
+
 app.use('*', async (c, next) => {
   const origin = c.req.header('Origin');
   const allowed = c.env.ALLOWED_ORIGINS.split(',').map((value) => value.trim()).filter(Boolean);
@@ -68,7 +112,20 @@ app.get('/v1/events', async (c) => {
   const { data, error } = await query;
   if (error) throw new ApiError(502, 'database_error', '无法读取活动', error.message);
   c.header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-  return c.json({ data: data?.map((row) => row.event) ?? [] });
+  const events = (data?.map((row) => row.event).filter(Boolean) ?? []) as any[];
+  return c.json({ data: await enrichPublishedEvents(c.env, events) });
+});
+
+app.get('/v1/venues', async (c) => {
+  const city = c.req.query('city')?.trim();
+  let query = publicClient(c.env).from('venues')
+    .select('id,name,city,country,latitude,longitude,address')
+    .order('name').limit(250);
+  if (city) query = query.eq('city', city);
+  const { data, error } = await query;
+  if (error) throw new ApiError(502, 'database_error', '无法读取场馆列表', error.message);
+  c.header('Cache-Control', 'public, max-age=300');
+  return c.json({ data: data ?? [] });
 });
 
 app.get('/v1/auth/review-question', async (c) => {
@@ -240,14 +297,64 @@ app.post('/v1/submissions', requireApprovedUser, async (c) => {
   if (!rate.success) throw new ApiError(429, 'rate_limited', '投稿过于频繁，请稍后再试');
   await verifyTurnstile(c.env, parsed.data.turnstile_token, c.req.header('CF-Connecting-IP'));
 
-  const { turnstile_token: _token, ...submission } = parsed.data;
-  const { data, error } = await adminClient(c.env)
+  const { turnstile_token: _token, ...input } = parsed.data;
+  const admin = adminClient(c.env);
+  let beforeSnapshot: Record<string, unknown> | null = null;
+  if (input.submission_kind === 'edit' && input.target_event_id) {
+    const { data: target, error: targetError } = await admin.from('events')
+      .select('id,title,category,start_time,end_time,city,country,latitude,longitude,description,source_url,metadata,venue:venues(id,name,address),people:event_people(person_id,role),sites:event_sites(site_id)')
+      .eq('id', input.target_event_id).neq('status', 'archived').maybeSingle();
+    if (targetError || !target) throw new ApiError(404, 'target_event_not_found', '要编辑的公开活动不存在');
+    beforeSnapshot = target as unknown as Record<string, unknown>;
+  }
+  const personIds = [...new Set(input.person_ids)];
+  const proposedSites = input.submission_scope === 'public'
+    ? ['duo', ...personIds.filter((id) => ['ayg', 'zyl'].includes(id))]
+    : ['duo'];
+  const submission = { ...input, person_ids: personIds, proposed_sites: proposedSites, before_snapshot: beforeSnapshot };
+  const { data, error } = await admin
     .from('event_submissions')
-    .insert({ ...submission, proposed_sites: [...new Set(submission.proposed_sites)], submitter_id: user.id, status: 'pending' })
+    .insert({ ...submission, submitter_id: user.id, status: input.submission_scope === 'private' ? 'draft' : 'pending' })
     .select('id,status,created_at')
     .single();
   if (error) throw new ApiError(422, 'submission_failed', '投稿保存失败', error.message);
-  return c.json({ data }, 201);
+  if (input.submission_scope === 'private') {
+    const { data: privateEvent, error: privateError } = await admin.from('private_events').insert({
+      owner_id: user.id, submission_id: data.id, title: input.title, category: input.category,
+      start_time: input.start_time, end_time: input.end_time ?? null, venue: input.venue ?? null,
+      city: input.city ?? null, country: input.country ?? null, latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null, description: input.description, media_links: input.media_links,
+    }).select('id').single();
+    if (privateError) {
+      await admin.from('event_submissions').delete().eq('id', data.id);
+      throw new ApiError(422, 'private_event_failed', '私人活动保存失败', privateError.message);
+    }
+    return c.json({ data: { ...data, private_event_id: privateEvent.id, visibility: 'private' } }, 201);
+  }
+  return c.json({ data: { ...data, visibility: 'public' } }, 201);
+});
+
+app.get('/v1/private-events', requireApprovedUser, async (c) => {
+  const userId = c.get('user').id;
+  const admin = adminClient(c.env);
+  const { data: events, error } = await admin.from('private_events')
+    .select('id,submission_id,title,category,start_time,end_time,venue,city,country,latitude,longitude,description,media_links,created_at')
+    .eq('owner_id', userId).order('start_time', { ascending: false });
+  if (error) throw new ApiError(502, 'database_error', '无法读取私人活动', error.message);
+  const submissionIds = (events ?? []).map((event) => event.submission_id);
+  const { data: mediaRows } = submissionIds.length
+    ? await admin.from('submission_media').select('submission_id,sort_order,media:media(object_key,status,content_type)').in('submission_id', submissionIds).order('sort_order')
+    : { data: [] };
+  const mediaMap = new Map<string, string[]>();
+  for (const row of mediaRows ?? []) {
+    const media = Array.isArray((row as any).media) ? (row as any).media[0] : (row as any).media;
+    if (!media || media.status !== 'available' || !String(media.content_type || '').startsWith('image/')) continue;
+    const list = mediaMap.get((row as any).submission_id) ?? [];
+    const url = publicMediaUrl(c.env, media.object_key);
+    if (url) list.push(url);
+    mediaMap.set((row as any).submission_id, list);
+  }
+  return c.json({ data: (events ?? []).map((event) => ({ ...event, images: mediaMap.get(event.submission_id) ?? [] })) });
 });
 
 app.get('/v1/admin/applications', requireLevel2, async (c) => {
@@ -290,7 +397,7 @@ app.get('/v1/admin/submissions', requireLevel3, async (c) => {
   const limit = parseLimit(c.req.query('limit'), 50, 100);
   const { data: submissions, error } = await adminClient(c.env)
     .from('event_submissions')
-    .select('id,submitter_id,proposed_sites,title,category,start_time,venue,city,country,description,source_url,status,created_at')
+    .select('id,submitter_id,submission_scope,submission_kind,target_event_id,person_ids,proposed_sites,title,category,start_time,end_time,venue,city,country,latitude,longitude,description,source_url,media_links,before_snapshot,status,created_at,media:submission_media(sort_order,asset:media(object_key,status,content_type))')
     .eq('status', 'pending')
     .order('created_at', { ascending: true })
     .limit(limit);
@@ -301,7 +408,13 @@ app.get('/v1/admin/submissions', requireLevel3, async (c) => {
     : { data: [], error: null };
   if (profilesError) throw new ApiError(502, 'database_error', '无法读取投稿人资料', profilesError.message);
   const names = new Map((profiles ?? []).map((profile) => [profile.user_id, profile.display_name]));
-  return c.json({ data: (submissions ?? []).map((item) => ({ ...item, submitter_name: names.get(item.submitter_id) ?? '社区用户' })) });
+  return c.json({ data: (submissions ?? []).map((item: any) => ({
+    ...item,
+    submitter_name: names.get(item.submitter_id) ?? '社区用户',
+    images: (item.media ?? []).map((entry: any) => Array.isArray(entry.asset) ? entry.asset[0] : entry.asset)
+      .filter((asset: any) => asset?.status === 'available' && String(asset.content_type || '').startsWith('image/'))
+      .map((asset: any) => publicMediaUrl(c.env, asset.object_key)),
+  })) });
 });
 
 app.post('/v1/admin/submissions/:id/review', requireLevel3, async (c) => {
