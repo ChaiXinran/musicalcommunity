@@ -101,6 +101,55 @@ app.get('/v1/me', requireUser, async (c) => {
   });
 });
 
+app.get('/v1/notifications', requireUser, async (c) => {
+  const limit = parseLimit(c.req.query('limit'), 50, 100);
+  const userId = c.get('user').id;
+  const client = userClient(c.env, c.get('accessToken'));
+  const [{ data: items, error: listError }, { count: unreadCount, error: countError }] = await Promise.all([
+    client
+      .from('notifications')
+      .select('id,category,title,message,target_url,metadata,read_at,created_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(limit),
+    client
+      .from('notifications')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .is('read_at', null),
+  ]);
+  if (listError || countError) {
+    throw new ApiError(502, 'database_error', '无法读取通知', listError?.message ?? countError?.message);
+  }
+  return c.json({ data: { items: items ?? [], unread_count: unreadCount ?? 0 } });
+});
+
+app.post('/v1/notifications/:id/read', requireUser, async (c) => {
+  const userId = c.get('user').id;
+  const { data, error } = await userClient(c.env, c.get('accessToken'))
+    .from('notifications')
+    .update({ read_at: new Date().toISOString() })
+    .eq('id', c.req.param('id'))
+    .eq('user_id', userId)
+    .select('id,read_at')
+    .maybeSingle();
+  if (error) throw new ApiError(502, 'database_error', '无法更新通知', error.message);
+  if (!data) throw new ApiError(404, 'notification_not_found', '通知不存在');
+  return c.json({ data });
+});
+
+app.post('/v1/notifications/read-all', requireUser, async (c) => {
+  const userId = c.get('user').id;
+  const { data, error } = await userClient(c.env, c.get('accessToken'))
+    .from('notifications')
+    .update({ read_at: new Date().toISOString() })
+    .eq('user_id', userId)
+    .is('read_at', null)
+    .select('id');
+  if (error) throw new ApiError(502, 'database_error', '无法更新通知', error.message);
+  return c.json({ data: { updated: data?.length ?? 0 } });
+});
+
 app.post('/v1/submissions', requireApprovedUser, async (c) => {
   const parsed = submissionSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '投稿内容不完整或格式错误', parsed.error.flatten());
@@ -250,6 +299,25 @@ app.post('/v1/admin/questions/:id/review', requireLevel1, async (c) => {
   });
   if (error) throw new ApiError(error.code === '42501' ? 403 : 409, 'question_review_failed', '无法审核该问题', error.message);
   return c.json({ data: { id: c.req.param('id'), status: data } });
+});
+
+app.post('/v1/admin/questions/:id/edit', requireLevel1, async (c) => {
+  const parsed = reviewQuestionSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) throw new ApiError(422, 'validation_failed', '审核问题格式错误', parsed.error.flatten());
+  const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('update_account_review_question', {
+    p_question_id: c.req.param('id'),
+    p_prompt: parsed.data.prompt,
+  });
+  if (error) throw new ApiError(error.code === '42501' ? 403 : 409, 'question_update_failed', '无法编辑该问题', error.message);
+  return c.json({ data });
+});
+
+app.post('/v1/admin/questions/:id/delete', requireLevel1, async (c) => {
+  const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('delete_account_review_question', {
+    p_question_id: c.req.param('id'),
+  });
+  if (error) throw new ApiError(error.code === '42501' ? 403 : 409, 'question_delete_failed', '无法删除该问题', error.message);
+  return c.json({ data: { id: c.req.param('id'), deleted: data } });
 });
 
 app.get('/v1/admin/users', requireLevel1, async (c) => {

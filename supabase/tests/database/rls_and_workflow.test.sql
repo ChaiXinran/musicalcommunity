@@ -1,6 +1,6 @@
 begin;
 
-select plan(28);
+select plan(41);
 
 select has_table('public', 'profiles', 'profiles table exists');
 select has_table('public', 'sites', 'sites table exists');
@@ -10,6 +10,7 @@ select has_table('public', 'event_submissions', 'event_submissions table exists'
 select has_table('public', 'media', 'media table exists');
 select has_table('public', 'account_review_questions', 'account review questions table exists');
 select has_table('public', 'account_applications', 'account applications table exists');
+select has_table('public', 'notifications', 'notifications table exists');
 
 insert into public.account_review_questions (id, prompt, status)
 values (
@@ -90,6 +91,16 @@ select is(
   'a level 2 administrator can review accounts'
 );
 
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000007';
+select is(
+  (select count(*)::integer from public.notifications
+    where user_id = '10000000-0000-0000-0000-000000000007' and title = '账号审核已通过'),
+  1,
+  'account review automatically notifies the applicant'
+);
+
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000005';
+
 select is(
   (public.submit_account_review_question('How will you help keep community discussions respectful and useful?')).status::text,
   'pending',
@@ -98,12 +109,45 @@ select is(
 
 set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000003';
 select is(
+  (select count(*)::integer from public.notifications
+    where user_id = '10000000-0000-0000-0000-000000000003' and title = '新的审核问题'),
+  1,
+  'a pending review question automatically notifies level 1 administrators'
+);
+
+select is(
   public.review_account_review_question(
     (select id from public.account_review_questions where proposed_by = '10000000-0000-0000-0000-000000000005' order by created_at desc limit 1),
     'approved'
   )::text,
   'approved',
   'a level 1 administrator can approve a proposed question'
+);
+
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000005';
+select is(
+  (select count(*)::integer from public.notifications
+    where user_id = '10000000-0000-0000-0000-000000000005' and title = '审核问题已通过'),
+  1,
+  'question review automatically notifies its proposer'
+);
+
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000003';
+
+select is(
+  (public.update_account_review_question(
+    (select id from public.account_review_questions where proposed_by = '10000000-0000-0000-0000-000000000005' order by created_at desc limit 1),
+    'How will you keep community discussions respectful, accurate, and useful?'
+  )).prompt,
+  'How will you keep community discussions respectful, accurate, and useful?',
+  'a level 1 administrator can edit an approved question'
+);
+
+select ok(
+  public.delete_account_review_question(
+    (select id from public.account_review_questions where proposed_by = '10000000-0000-0000-0000-000000000005' order by created_at desc limit 1)
+  ),
+  'a level 1 administrator can soft-delete an approved question'
 );
 
 reset role;
@@ -125,6 +169,47 @@ select lives_ok(
     values ('ayg', '20000000-0000-0000-0000-000000000001',
       '10000000-0000-0000-0000-000000000001', 'root')$$,
   'an active user can create a comment'
+);
+
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000002';
+insert into public.reports (reporter_id, comment_id, reason, status)
+values (
+  '10000000-0000-0000-0000-000000000002',
+  (select id from public.comments where content = 'root'),
+  'test report',
+  'open'
+);
+
+select is(
+  (select count(*)::integer from public.notifications
+    where user_id = '10000000-0000-0000-0000-000000000002' and title = '举报已提交'),
+  1,
+  'a new report automatically notifies its reporter'
+);
+
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000006';
+select is(
+  (select count(*)::integer from public.notifications
+    where user_id = '10000000-0000-0000-0000-000000000006' and title = '新的举报'),
+  1,
+  'a new report automatically notifies administrators'
+);
+
+select is(
+  public.review_report(
+    (select id from public.reports where reporter_id = '10000000-0000-0000-0000-000000000002' and reason = 'test report'),
+    'resolved'
+  )::text,
+  'resolved',
+  'a level 3 administrator can resolve a report'
+);
+
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000002';
+select is(
+  (select count(*)::integer from public.notifications
+    where user_id = '10000000-0000-0000-0000-000000000002' and title = '举报已处理'),
+  1,
+  'report resolution automatically notifies its reporter'
 );
 
 set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000004';
@@ -216,11 +301,36 @@ insert into public.event_submissions (
 );
 
 set local role authenticated;
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000001';
+select is(
+  (select count(*)::integer from public.notifications
+    where user_id = '10000000-0000-0000-0000-000000000001' and title = '投稿已提交'),
+  1,
+  'a pending submission automatically notifies its submitter'
+);
+
 set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000006';
+select is(
+  (select count(*)::integer from public.notifications
+    where user_id = '10000000-0000-0000-0000-000000000006' and title = '新的活动投稿'),
+  1,
+  'a pending submission automatically notifies administrators'
+);
+
 select ok(
   public.review_event_submission('40000000-0000-0000-0000-000000000003', 'approved') is not null,
   'a moderator can atomically approve a pending submission'
 );
+
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000001';
+select is(
+  (select count(*)::integer from public.notifications
+    where user_id = '10000000-0000-0000-0000-000000000001' and title = '投稿审核已通过'),
+  1,
+  'submission review automatically notifies its submitter'
+);
+
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000006';
 
 select is(
   (select count(*)::integer from public.event_submissions where id = '40000000-0000-0000-0000-000000000003' and status = 'approved'),
