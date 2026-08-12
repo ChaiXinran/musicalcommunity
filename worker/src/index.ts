@@ -109,18 +109,24 @@ app.get('/v1/events', async (c) => {
   const siteId = c.req.query('site_id');
   if (!siteId || !['ayg', 'zyl', 'duo'].includes(siteId)) throw new ApiError(422, 'invalid_site_id', 'site_id 必须是 ayg、zyl 或 duo');
   const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 50) || 50, 1), 100);
-  let query = publicClient(c.env)
+  const offset = Math.max(Number(c.req.query('offset') ?? 0) || 0, 0);
+  const { data: siteRows, error: siteError } = await publicClient(c.env)
     .from('event_sites')
-    .select('site_id,event:events(id,slug,title,category,start_time,end_time,city,country,latitude,longitude,description,source_url,metadata,venue:venues(id,name,address),people:event_people(person_id,role),sites:event_sites(site_id))')
+    .select('event_id')
     .eq('site_id', siteId)
-    .order('start_time', { referencedTable: 'events', ascending: false })
-    .limit(limit);
-  const before = c.req.query('before');
-  if (before) query = query.lt('events.start_time', before);
-  const { data, error } = await query;
+    .order('event_id', { ascending: true })
+    .range(offset, offset + limit - 1);
+  if (siteError) throw new ApiError(502, 'database_error', '无法读取活动站点关联', siteError.message);
+  const eventIds = (siteRows ?? []).map((row) => row.event_id);
+  if (!eventIds.length) return c.json({ data: [] });
+  const { data, error } = await publicClient(c.env)
+    .from('events')
+    .select('id,slug,title,category,start_time,end_time,city,country,latitude,longitude,description,source_url,metadata,venue:venues(id,name,address),people:event_people(person_id,role),sites:event_sites(site_id)')
+    .in('id', eventIds)
+    .order('start_time', { ascending: false });
   if (error) throw new ApiError(502, 'database_error', '无法读取活动', error.message);
   c.header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-  const events = (data?.map((row) => row.event).filter(Boolean) ?? []) as any[];
+  const events = (data ?? []) as any[];
   return c.json({ data: await enrichPublishedEvents(c.env, events) });
 });
 
