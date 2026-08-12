@@ -8,6 +8,14 @@ import type { AppEnv } from './types';
 import { completeUpload, signUpload } from './uploads';
 
 const app = new Hono<AppEnv>();
+const validSiteIds = ['duo', 'ayg', 'zyl'] as const;
+type SiteId = typeof validSiteIds[number];
+const requestSiteId = (c: any): SiteId => {
+  const value = c.req.header('X-Site-Id') || 'duo';
+  if (!validSiteIds.includes(value as SiteId)) throw new ApiError(422, 'invalid_site_id', '站点标识无效');
+  return value as SiteId;
+};
+const submissionMatchesSite = (submission: any, siteId: SiteId) => siteId === 'duo' || (submission?.proposed_sites || []).includes(siteId);
 
 const publicMediaUrl = (env: AppEnv['Bindings'], objectKey?: string | null) =>
   objectKey ? `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${objectKey}` : null;
@@ -308,6 +316,7 @@ app.post('/v1/submissions', requireApprovedUser, async (c) => {
   await verifyTurnstile(c.env, parsed.data.turnstile_token, c.req.header('CF-Connecting-IP'));
 
   const { turnstile_token: _token, ...input } = parsed.data;
+  const siteId = requestSiteId(c);
   const admin = adminClient(c.env);
   let beforeSnapshot: Record<string, unknown> | null = null;
   if (input.submission_kind === 'edit' && input.target_event_id) {
@@ -317,10 +326,12 @@ app.post('/v1/submissions', requireApprovedUser, async (c) => {
     if (targetError || !target) throw new ApiError(404, 'target_event_not_found', '要编辑的公开活动不存在');
     beforeSnapshot = target as unknown as Record<string, unknown>;
   }
-  const personIds = [...new Set(input.person_ids)];
+  const requestedPersonIds = [...new Set(input.person_ids)];
+  const personIds = siteId === 'duo' ? requestedPersonIds : [siteId];
+  if (siteId !== 'duo' && requestedPersonIds.some((id) => id !== siteId)) throw new ApiError(403, 'submission_scope_denied', '个人站只能投稿本站人物的数据');
   const proposedSites = input.submission_scope === 'public'
     ? ['duo', ...personIds.filter((id) => ['ayg', 'zyl'].includes(id))]
-    : ['duo'];
+    : [siteId];
   const submission = { ...input, person_ids: personIds, proposed_sites: proposedSites, before_snapshot: beforeSnapshot };
   const { data, error } = await admin
     .from('event_submissions')
@@ -368,13 +379,14 @@ app.get('/v1/private-events', requireApprovedUser, async (c) => {
 });
 
 app.get('/v1/admin/applications', requireLevel2, async (c) => {
+  const siteId = requestSiteId(c);
   const limit = parseLimit(c.req.query('limit'), 50, 100);
-  const { data: applications, error } = await adminClient(c.env)
+  let applicationQuery = adminClient(c.env)
     .from('account_applications')
     .select('user_id,site_id,question_snapshot,answer,status,submitted_at')
-    .eq('status', 'pending')
-    .order('submitted_at', { ascending: true })
-    .limit(limit);
+    .eq('status', 'pending');
+  if (siteId !== 'duo') applicationQuery = applicationQuery.eq('site_id', siteId);
+  const { data: applications, error } = await applicationQuery.order('submitted_at', { ascending: true }).limit(limit);
   if (error) throw new ApiError(502, 'database_error', '无法读取账号申请', error.message);
   const userIds = (applications ?? []).map((item) => item.user_id);
   const { data: profiles } = userIds.length
@@ -389,6 +401,11 @@ app.get('/v1/admin/applications', requireLevel2, async (c) => {
 });
 
 app.post('/v1/admin/applications/:id/review', requireLevel2, async (c) => {
+  const siteId = requestSiteId(c);
+  if (siteId !== 'duo') {
+    const { data: application } = await adminClient(c.env).from('account_applications').select('site_id').eq('user_id', c.req.param('id')).maybeSingle();
+    if (!application || application.site_id !== siteId) throw new ApiError(403, 'review_scope_denied', '个人站只能审核本站注册申请');
+  }
   const parsed = accountReviewSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '账号审核参数格式错误', parsed.error.flatten());
   const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('review_account_application', {
@@ -404,13 +421,14 @@ app.post('/v1/admin/applications/:id/review', requireLevel2, async (c) => {
 });
 
 app.get('/v1/admin/submissions', requireLevel3, async (c) => {
+  const siteId = requestSiteId(c);
   const limit = parseLimit(c.req.query('limit'), 50, 100);
-  const { data: submissions, error } = await adminClient(c.env)
+  let submissionQuery = adminClient(c.env)
     .from('event_submissions')
     .select('id,submitter_id,submission_scope,submission_kind,target_event_id,person_ids,proposed_sites,title,category,start_time,end_time,venue,city,country,latitude,longitude,description,source_url,media_links,before_snapshot,status,created_at,media:submission_media(sort_order,asset:media(object_key,status,content_type))')
-    .eq('status', 'pending')
-    .order('created_at', { ascending: true })
-    .limit(limit);
+    .eq('status', 'pending');
+  if (siteId !== 'duo') submissionQuery = submissionQuery.contains('proposed_sites', [siteId]);
+  const { data: submissions, error } = await submissionQuery.order('created_at', { ascending: true }).limit(limit);
   if (error) throw new ApiError(502, 'database_error', '无法读取投稿申请', error.message);
   const submitterIds = [...new Set((submissions ?? []).map((item) => item.submitter_id))];
   const { data: profiles, error: profilesError } = submitterIds.length
@@ -428,6 +446,11 @@ app.get('/v1/admin/submissions', requireLevel3, async (c) => {
 });
 
 app.post('/v1/admin/submissions/:id/review', requireLevel3, async (c) => {
+  const siteId = requestSiteId(c);
+  if (siteId !== 'duo') {
+    const { data: submission } = await adminClient(c.env).from('event_submissions').select('proposed_sites').eq('id', c.req.param('id')).maybeSingle();
+    if (!submissionMatchesSite(submission, siteId)) throw new ApiError(403, 'review_scope_denied', '个人站只能审核本站人物的投稿');
+  }
   const parsed = reviewSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '审核参数格式错误', parsed.error.flatten());
   const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('review_event_submission', {
@@ -444,13 +467,14 @@ app.post('/v1/admin/submissions/:id/review', requireLevel3, async (c) => {
 });
 
 app.get('/v1/admin/reports', requireLevel3, async (c) => {
+  const siteId = requestSiteId(c);
   const limit = parseLimit(c.req.query('limit'), 50, 100);
-  const { data: reports, error } = await adminClient(c.env)
+  let reportQuery = adminClient(c.env)
     .from('reports')
     .select('id,reporter_id,comment_id,reported_user_id,subject_user_id,reason,details,status,automatic_action,created_at,comment:comments(id,content,user_id,site_id,event_id)')
-    .in('status', ['open', 'reviewing'])
-    .order('created_at', { ascending: true })
-    .limit(limit);
+    .in('status', ['open', 'reviewing']);
+  if (siteId !== 'duo') reportQuery = reportQuery.eq('comment.site_id', siteId);
+  const { data: reports, error } = await reportQuery.order('created_at', { ascending: true }).limit(limit);
   if (error) throw new ApiError(502, 'database_error', '无法读取举报列表', error.message);
   const userIds = [...new Set((reports ?? []).flatMap((item) => [item.reporter_id, item.subject_user_id].filter(Boolean)))] as string[];
   const { data: profiles } = userIds.length
@@ -465,6 +489,12 @@ app.get('/v1/admin/reports', requireLevel3, async (c) => {
 });
 
 app.post('/v1/admin/reports/:id/review', requireLevel3, async (c) => {
+  const siteId = requestSiteId(c);
+  if (siteId !== 'duo') {
+    const { data: report } = await adminClient(c.env).from('reports').select('comment:comments(site_id)').eq('id', c.req.param('id')).maybeSingle();
+    const comment = Array.isArray((report as any)?.comment) ? (report as any).comment[0] : (report as any)?.comment;
+    if (!comment || comment.site_id !== siteId) throw new ApiError(403, 'review_scope_denied', '个人站只能处理本站评论举报');
+  }
   const parsed = reportReviewSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '举报处理参数格式错误', parsed.error.flatten());
   const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('review_report', {
@@ -477,6 +507,7 @@ app.post('/v1/admin/reports/:id/review', requireLevel3, async (c) => {
 });
 
 app.get('/v1/admin/appeals', requireLevel3, async (c) => {
+  if (requestSiteId(c) !== 'duo') return c.json({ data: [] });
   const limit = parseLimit(c.req.query('limit'), 50, 100);
   const admin = adminClient(c.env);
   const { data: appeals, error } = await admin.from('ban_appeals')
@@ -509,7 +540,8 @@ app.post('/v1/admin/appeals/:id/review', requireLevel3, async (c) => {
 });
 
 app.get('/v1/admin/questions', requireLevel2, async (c) => {
-  const siteId = c.req.query('site_id');
+  const requestScope = requestSiteId(c);
+  const siteId = requestScope === 'duo' ? c.req.query('site_id') : requestScope;
   if (siteId && !['duo', 'ayg', 'zyl'].includes(siteId)) throw new ApiError(422, 'invalid_site', '审核问题站点无效');
   let query = adminClient(c.env)
     .from('account_review_questions')
@@ -525,12 +557,19 @@ app.get('/v1/admin/questions', requireLevel2, async (c) => {
 app.post('/v1/admin/questions', requireLevel2, async (c) => {
   const parsed = reviewQuestionSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '审核问题格式错误', parsed.error.flatten());
-  const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('submit_account_review_question', { p_prompt: parsed.data.prompt, p_site_id: parsed.data.site_id });
+  const siteId = requestSiteId(c);
+  const targetSite = siteId === 'duo' ? parsed.data.site_id : siteId;
+  const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('submit_account_review_question', { p_prompt: parsed.data.prompt, p_site_id: targetSite });
   if (error) throw new ApiError(error.code === '42501' ? 403 : 409, 'question_submit_failed', '无法提交审核问题', error.message);
   return c.json({ data }, 201);
 });
 
 app.post('/v1/admin/questions/:id/review', requireLevel1, async (c) => {
+  const siteId = requestSiteId(c);
+  if (siteId !== 'duo') {
+    const { data: question } = await adminClient(c.env).from('account_review_questions').select('site_id').eq('id', c.req.param('id')).maybeSingle();
+    if (!question || question.site_id !== siteId) throw new ApiError(403, 'review_scope_denied', '个人站只能审核本站问题');
+  }
   const parsed = reviewQuestionDecisionSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '问题审核参数格式错误', parsed.error.flatten());
   const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('review_account_review_question', {
@@ -543,6 +582,11 @@ app.post('/v1/admin/questions/:id/review', requireLevel1, async (c) => {
 });
 
 app.post('/v1/admin/questions/:id/edit', requireLevel1, async (c) => {
+  const siteId = requestSiteId(c);
+  if (siteId !== 'duo') {
+    const { data: question } = await adminClient(c.env).from('account_review_questions').select('site_id').eq('id', c.req.param('id')).maybeSingle();
+    if (!question || question.site_id !== siteId) throw new ApiError(403, 'review_scope_denied', '个人站只能编辑本站问题');
+  }
   const parsed = reviewQuestionSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '审核问题格式错误', parsed.error.flatten());
   const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('update_account_review_question', {
@@ -554,6 +598,11 @@ app.post('/v1/admin/questions/:id/edit', requireLevel1, async (c) => {
 });
 
 app.post('/v1/admin/questions/:id/delete', requireLevel1, async (c) => {
+  const siteId = requestSiteId(c);
+  if (siteId !== 'duo') {
+    const { data: question } = await adminClient(c.env).from('account_review_questions').select('site_id').eq('id', c.req.param('id')).maybeSingle();
+    if (!question || question.site_id !== siteId) throw new ApiError(403, 'review_scope_denied', '个人站只能删除本站问题');
+  }
   const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('delete_account_review_question', {
     p_question_id: c.req.param('id'),
   });
@@ -562,6 +611,7 @@ app.post('/v1/admin/questions/:id/delete', requireLevel1, async (c) => {
 });
 
 app.get('/v1/admin/users', requireLevel1, async (c) => {
+  if (requestSiteId(c) !== 'duo') throw new ApiError(403, 'central_admin_only', '全部账号与跨站权限仅在双人站管理');
   const authUsers = [];
   for (let page = 1; page <= 10; page += 1) {
     const { data, error } = await adminClient(c.env).auth.admin.listUsers({ page, perPage: 1000 });
@@ -585,6 +635,7 @@ app.get('/v1/admin/users', requireLevel1, async (c) => {
 });
 
 app.post('/v1/admin/users/register', requireLevel1, async (c) => {
+  if (requestSiteId(c) !== 'duo') throw new ApiError(403, 'central_admin_only', '代注册账号仅在双人站开放');
   const parsed = adminRegisterUserSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '代注册信息格式错误', parsed.error.flatten());
 
@@ -627,6 +678,7 @@ app.post('/v1/admin/users/register', requireLevel1, async (c) => {
 });
 
 app.post('/v1/admin/users/:id/management-level', requireLevel1, async (c) => {
+  if (requestSiteId(c) !== 'duo') throw new ApiError(403, 'central_admin_only', '管理员级别仅在双人站管理');
   const parsed = managementLevelSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '管理员级别参数格式错误', parsed.error.flatten());
   const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('assign_management_level', {
@@ -638,6 +690,7 @@ app.post('/v1/admin/users/:id/management-level', requireLevel1, async (c) => {
 });
 
 app.post('/v1/admin/site-background', requireLevel1, async (c) => {
+  if (requestSiteId(c) !== 'duo') throw new ApiError(403, 'central_admin_only', '全站背景仅在双人站管理');
   const parsed = siteBackgroundSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '网站背景参数格式错误', parsed.error.flatten());
   const admin = adminClient(c.env);
@@ -667,6 +720,7 @@ app.post('/v1/admin/site-background', requireLevel1, async (c) => {
 });
 
 app.get('/v1/admin/announcements', requireLevel1, async (c) => {
+  if (requestSiteId(c) !== 'duo') throw new ApiError(403, 'central_admin_only', '全站通知仅在双人站管理');
   const limit = parseLimit(c.req.query('limit'), 100, 100);
   const { data, error } = await adminClient(c.env).from('site_announcements')
     .select('id,title,message,audience,published_at,created_at,updated_at')
