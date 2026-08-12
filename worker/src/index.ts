@@ -60,7 +60,7 @@ app.use('*', async (c, next) => {
     c.header('Access-Control-Allow-Origin', origin);
     c.header('Vary', 'Origin');
     c.header('Access-Control-Allow-Credentials', 'true');
-    c.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    c.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Site-Id');
     c.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     c.header('Access-Control-Max-Age', '86400');
   }
@@ -129,12 +129,19 @@ app.get('/v1/venues', async (c) => {
 });
 
 app.get('/v1/auth/review-question', async (c) => {
-  const { data, error } = await publicClient(c.env).rpc('random_account_review_question');
-  const fallback = { id: '00000000-0000-4000-8000-000000000017', prompt: '你为什么喜欢龙龙和嘎嘎呢？', fallback: true };
+  const siteId = c.req.query('site_id') || 'duo';
+  if (!['duo', 'ayg', 'zyl'].includes(siteId)) throw new ApiError(422, 'invalid_site', '注册站点无效');
+  const { data, error } = await publicClient(c.env).rpc('random_account_review_question', { p_site_id: siteId });
+  const fallbacks = {
+    duo: { id: '00000000-0000-4000-8000-000000000017', prompt: '你为什么喜欢龙龙和嘎嘎呢？' },
+    ayg: { id: '00000000-0000-4000-8000-000000000018', prompt: '你为什么喜欢阿云嘎？请结合自己的经历认真说明申请加入云朵社区的理由。' },
+    zyl: { id: '00000000-0000-4000-8000-000000000019', prompt: '你为什么喜欢郑云龙？请结合自己的经历认真说明申请加入小星星社区的理由。' },
+  } as const;
+  const fallback = { ...fallbacks[siteId as keyof typeof fallbacks], fallback: true, site_id: siteId };
   if (error) return c.json({ data: fallback });
   const question = data?.[0];
   if (!question) return c.json({ data: fallback });
-  return c.json({ data: question });
+  return c.json({ data: { ...question, site_id: siteId } });
 });
 
 app.get('/v1/me', requireUser, async (c) => {
@@ -142,11 +149,12 @@ app.get('/v1/me', requireUser, async (c) => {
   const level = managementLevel(access.roles);
   const { data: profile, error } = await userClient(c.env, c.get('accessToken'))
     .from('profiles')
-    .select('user_id,display_name,avatar_key,bio,status,created_at')
+    .select('user_id,display_name,avatar_key,bio,status,registration_site,user_group,created_at')
     .eq('user_id', c.get('user').id)
     .single();
   if (error || !profile) throw new ApiError(502, 'database_error', '无法读取账号资料', error?.message);
   const admin = adminClient(c.env);
+  const { data: siteAccess } = await admin.from('user_site_access').select('site_id').eq('user_id', c.get('user').id);
   const { data: application } = await admin
     .from('account_applications')
     .select('question_snapshot,answer,status,review_note,submitted_at,reviewed_at')
@@ -173,6 +181,7 @@ app.get('/v1/me', requireUser, async (c) => {
     data: {
       user: { id: c.get('user').id, email: c.get('user').email ?? null },
       profile,
+      site_access: (siteAccess ?? []).map((item) => item.site_id),
       roles: access.roles,
       management_level: level,
       application: application ?? null,
@@ -362,14 +371,14 @@ app.get('/v1/admin/applications', requireLevel2, async (c) => {
   const limit = parseLimit(c.req.query('limit'), 50, 100);
   const { data: applications, error } = await adminClient(c.env)
     .from('account_applications')
-    .select('user_id,question_snapshot,answer,status,submitted_at')
+    .select('user_id,site_id,question_snapshot,answer,status,submitted_at')
     .eq('status', 'pending')
     .order('submitted_at', { ascending: true })
     .limit(limit);
   if (error) throw new ApiError(502, 'database_error', '无法读取账号申请', error.message);
   const userIds = (applications ?? []).map((item) => item.user_id);
   const { data: profiles } = userIds.length
-    ? await adminClient(c.env).from('profiles').select('user_id,display_name,created_at').in('user_id', userIds)
+    ? await adminClient(c.env).from('profiles').select('user_id,display_name,user_group,registration_site,created_at').in('user_id', userIds)
     : { data: [] };
   const profileMap = new Map((profiles ?? []).map((profile) => [profile.user_id, profile]));
   const rows = await Promise.all((applications ?? []).map(async (application) => {
@@ -500,11 +509,15 @@ app.post('/v1/admin/appeals/:id/review', requireLevel3, async (c) => {
 });
 
 app.get('/v1/admin/questions', requireLevel2, async (c) => {
-  const { data, error } = await adminClient(c.env)
+  const siteId = c.req.query('site_id');
+  if (siteId && !['duo', 'ayg', 'zyl'].includes(siteId)) throw new ApiError(422, 'invalid_site', '审核问题站点无效');
+  let query = adminClient(c.env)
     .from('account_review_questions')
-    .select('id,prompt,status,is_active,proposed_by,reviewed_by,review_note,created_at,reviewed_at')
+    .select('id,site_id,prompt,status,is_active,proposed_by,reviewed_by,review_note,created_at,reviewed_at')
     .order('created_at', { ascending: false })
     .limit(200);
+  if (siteId) query = query.eq('site_id', siteId);
+  const { data, error } = await query;
   if (error) throw new ApiError(502, 'database_error', '无法读取审核问题库', error.message);
   return c.json({ data });
 });
@@ -512,7 +525,7 @@ app.get('/v1/admin/questions', requireLevel2, async (c) => {
 app.post('/v1/admin/questions', requireLevel2, async (c) => {
   const parsed = reviewQuestionSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '审核问题格式错误', parsed.error.flatten());
-  const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('submit_account_review_question', { p_prompt: parsed.data.prompt });
+  const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('submit_account_review_question', { p_prompt: parsed.data.prompt, p_site_id: parsed.data.site_id });
   if (error) throw new ApiError(error.code === '42501' ? 403 : 409, 'question_submit_failed', '无法提交审核问题', error.message);
   return c.json({ data }, 201);
 });
@@ -558,7 +571,7 @@ app.get('/v1/admin/users', requireLevel1, async (c) => {
   }
   const userIds = authUsers.map((user) => user.id);
   const [{ data: profiles, error: profileError }, { data: roleRows, error: roleError }] = await Promise.all([
-    userIds.length ? adminClient(c.env).from('profiles').select('user_id,display_name,status,created_at').in('user_id', userIds) : Promise.resolve({ data: [], error: null }),
+    userIds.length ? adminClient(c.env).from('profiles').select('user_id,display_name,status,user_group,registration_site,created_at').in('user_id', userIds) : Promise.resolve({ data: [], error: null }),
     userIds.length ? adminClient(c.env).from('user_roles').select('user_id,role').in('user_id', userIds) : Promise.resolve({ data: [], error: null }),
   ]);
   if (profileError || roleError) throw new ApiError(502, 'database_error', '无法读取账号权限资料', profileError?.message ?? roleError?.message);
@@ -584,6 +597,7 @@ app.post('/v1/admin/users/register', requireLevel1, async (c) => {
     email_confirm: false,
     user_metadata: {
       display_name: parsed.data.email.split('@')[0],
+      registration_site: 'duo',
       review_question_id: fallbackQuestionId,
       review_question: fallbackQuestion,
       review_answer: parsed.data.answer,

@@ -58,6 +58,7 @@ export const accountReviewSchema = z.object({
 
 export const reviewQuestionSchema = z.object({
   prompt: z.string().trim().min(10).max(500),
+  site_id: z.enum(['duo', 'ayg', 'zyl']).default('duo'),
 });
 
 export const reviewQuestionDecisionSchema = z.object({

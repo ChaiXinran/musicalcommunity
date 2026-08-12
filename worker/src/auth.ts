@@ -29,21 +29,23 @@ async function authenticate(c: Context<AppEnv>): Promise<void> {
   c.set('user', data.user);
 }
 
-async function loadAccess(c: Context<AppEnv>): Promise<{ status: ProfileStatus; roles: AppRole[] }> {
+async function loadAccess(c: Context<AppEnv>): Promise<{ status: ProfileStatus; roles: AppRole[]; siteAccess: string[] }> {
   const client = userClient(c.env, c.get('accessToken'));
   const userId = c.get('user').id;
-  const [{ data: profile, error: profileError }, { data: roleRows, error: rolesError }] = await Promise.all([
+  const [{ data: profile, error: profileError }, { data: roleRows, error: rolesError }, { data: siteRows, error: siteError }] = await Promise.all([
     client.from('profiles').select('status').eq('user_id', userId).single(),
     client.from('user_roles').select('role').eq('user_id', userId),
+    client.from('user_site_access').select('site_id').eq('user_id', userId),
   ]);
   if (profileError || !profile) throw new ApiError(403, 'profile_unavailable', '账号资料不存在或暂不可用', profileError?.message);
   if (rolesError) throw new ApiError(502, 'database_error', '无法读取账号权限', rolesError.message);
+  if (siteError) throw new ApiError(502, 'database_error', '无法读取账号站点权限', siteError.message);
   const status = profile.status as ProfileStatus;
   const roles = (roleRows ?? []).map((row) => row.role as AppRole);
   c.set('profileStatus', status);
   c.set('roles', roles);
   c.set('managementLevel', managementLevel(roles));
-  return { status, roles };
+  return { status, roles, siteAccess: (siteRows ?? []).map((row) => row.site_id) };
 }
 
 export const requireUser: MiddlewareHandler<AppEnv> = async (c, next) => {
@@ -53,7 +55,9 @@ export const requireUser: MiddlewareHandler<AppEnv> = async (c, next) => {
 
 export const requireApprovedUser: MiddlewareHandler<AppEnv> = async (c, next) => {
   await authenticate(c);
-  const { status } = await loadAccess(c);
+  const { status, siteAccess } = await loadAccess(c);
+  const siteId = c.req.header('X-Site-Id') || 'duo';
+  if (!siteAccess.includes(siteId)) throw new ApiError(403, 'site_access_denied', '当前账号没有这个网站的社区权限');
   if (status === 'pending') throw new ApiError(403, 'account_pending', '账号正在等待管理员审核');
   if (status === 'rejected') throw new ApiError(403, 'account_rejected', '账号申请未通过，请联系管理员');
   if (status !== 'active') throw new ApiError(403, 'account_locked', '账号当前不可参与社区互动');
@@ -80,6 +84,6 @@ export const requireLevel1 = requireManagementLevel(1);
 export const requireLevel2 = requireManagementLevel(2);
 export const requireLevel3 = requireManagementLevel(3);
 
-export async function currentAccess(c: Context<AppEnv>): Promise<{ status: ProfileStatus; roles: AppRole[] }> {
+export async function currentAccess(c: Context<AppEnv>): Promise<{ status: ProfileStatus; roles: AppRole[]; siteAccess: string[] }> {
   return loadAccess(c);
 }
