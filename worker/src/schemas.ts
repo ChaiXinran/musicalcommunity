@@ -69,6 +69,12 @@ export const managementLevelSchema = z.object({
   level: z.union([z.literal(2), z.literal(3), z.null()]),
 });
 
+export const adminRegisterUserSchema = z.object({
+  email: z.email().transform((value) => value.trim().toLowerCase()),
+  password: z.string().min(8).max(128),
+  answer: z.string().trim().min(200).max(5000),
+});
+
 export const reportReviewSchema = z.object({
   decision: z.enum(['upheld', 'dismissed']),
   review_note: optionalText(2000),

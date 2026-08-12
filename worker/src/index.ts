@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { currentAccess, managementLevel, requireApprovedUser, requireLevel1, requireLevel2, requireLevel3, requireUser } from './auth';
 import { ApiError, errorResponse } from './errors';
-import { accountReviewSchema, announcementSchema, banAppealReviewSchema, banAppealSchema, managementLevelSchema, parseLimit, reportReviewSchema, reportSubmissionSchema, reviewQuestionDecisionSchema, reviewQuestionSchema, reviewSchema, siteBackgroundSchema, submissionSchema, uploadCompleteSchema, uploadSignSchema } from './schemas';
+import { accountReviewSchema, adminRegisterUserSchema, announcementSchema, banAppealReviewSchema, banAppealSchema, managementLevelSchema, parseLimit, reportReviewSchema, reportSubmissionSchema, reviewQuestionDecisionSchema, reviewQuestionSchema, reviewSchema, siteBackgroundSchema, submissionSchema, uploadCompleteSchema, uploadSignSchema } from './schemas';
 import { adminClient, publicClient, userClient } from './supabase';
 import { verifyTurnstile } from './turnstile';
 import type { AppEnv } from './types';
@@ -569,6 +569,47 @@ app.get('/v1/admin/users', requireLevel1, async (c) => {
     const roles = rolesByUser.get(user.id) ?? ['user'];
     return { id: user.id, email: user.email ?? null, email_confirmed_at: user.email_confirmed_at, ...profileMap.get(user.id), roles, management_level: managementLevel(roles as Array<'user' | 'editor' | 'moderator' | 'admin'>) };
   }) });
+});
+
+app.post('/v1/admin/users/register', requireLevel1, async (c) => {
+  const parsed = adminRegisterUserSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) throw new ApiError(422, 'validation_failed', '代注册信息格式错误', parsed.error.flatten());
+
+  const fallbackQuestionId = '00000000-0000-4000-8000-000000000017';
+  const fallbackQuestion = '你为什么喜欢龙龙和嘎嘎呢？';
+  const admin = adminClient(c.env);
+  const { data, error } = await admin.auth.admin.createUser({
+    email: parsed.data.email,
+    password: parsed.data.password,
+    email_confirm: false,
+    user_metadata: {
+      display_name: parsed.data.email.split('@')[0],
+      review_question_id: fallbackQuestionId,
+      review_question: fallbackQuestion,
+      review_answer: parsed.data.answer,
+      registered_by_admin: c.get('user').id,
+    },
+  });
+  if (error || !data.user) {
+    const duplicate = /already|registered|exists/i.test(error?.message || '');
+    throw new ApiError(duplicate ? 409 : 502, duplicate ? 'email_exists' : 'auth_admin_error', duplicate ? '该邮箱已经注册' : '无法创建账号', error?.message);
+  }
+
+  const requestOrigin = c.req.header('Origin') || '';
+  const allowedOrigins = c.env.ALLOWED_ORIGINS.split(',').map((item) => item.trim()).filter(Boolean);
+  const origin = allowedOrigins.includes(requestOrigin) ? requestOrigin : allowedOrigins[0];
+  const emailRedirectTo = origin ? `${origin.replace(/\/$/, '')}/earth/?community=account` : undefined;
+  const { error: mailError } = await publicClient(c.env).auth.resend({
+    type: 'signup',
+    email: parsed.data.email,
+    options: emailRedirectTo ? { emailRedirectTo } : undefined,
+  });
+  if (mailError) {
+    await admin.auth.admin.deleteUser(data.user.id);
+    throw new ApiError(502, 'confirmation_email_failed', '验证邮件发送失败，账号未创建', mailError.message);
+  }
+
+  return c.json({ data: { user_id: data.user.id, email: parsed.data.email, confirmation_sent: true } }, 201);
 });
 
 app.post('/v1/admin/users/:id/management-level', requireLevel1, async (c) => {
