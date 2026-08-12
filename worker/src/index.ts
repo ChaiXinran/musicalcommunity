@@ -130,9 +130,10 @@ app.get('/v1/venues', async (c) => {
 
 app.get('/v1/auth/review-question', async (c) => {
   const { data, error } = await publicClient(c.env).rpc('random_account_review_question');
-  if (error) throw new ApiError(502, 'database_error', '无法读取注册审核问题', error.message);
+  const fallback = { id: '00000000-0000-4000-8000-000000000017', prompt: '你为什么喜欢龙龙和嘎嘎呢？', fallback: true };
+  if (error) return c.json({ data: fallback });
   const question = data?.[0];
-  if (!question) throw new ApiError(404, 'review_question_unavailable', '暂时没有可用的注册审核问题，请稍后再试');
+  if (!question) return c.json({ data: fallback });
   return c.json({ data: question });
 });
 
