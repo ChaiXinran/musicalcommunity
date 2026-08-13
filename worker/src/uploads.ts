@@ -8,7 +8,9 @@ const MIME_RULES = {
   submission: { max: 100 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'video/mp4', 'video/webm'] },
   event_photo: { max: 25 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp', 'image/avif'] },
   comment_image: { max: 8 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp', 'image/avif'] },
-  site_background: { max: 25 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp', 'image/avif'] },
+  site_background: { max: 25 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif'] },
+  announcement_image: { max: 8 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif'] },
+  promotion_image: { max: 25 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif'] },
 } as const;
 
 const EXTENSIONS: Record<string, string> = {
@@ -16,11 +18,12 @@ const EXTENSIONS: Record<string, string> = {
   'image/png': 'png',
   'image/webp': 'webp',
   'image/avif': 'avif',
+  'image/gif': 'gif',
   'video/mp4': 'mp4',
   'video/webm': 'webm',
 };
 
-const PREFIXES = { avatar: 'avatars', submission: 'submissions', event_photo: 'event-photos', comment_image: 'comment-images', site_background: 'site-backgrounds' } as const;
+const PREFIXES = { avatar: 'avatars', submission: 'submissions', event_photo: 'event-photos', comment_image: 'comment-images', site_background: 'site-backgrounds', announcement_image: 'announcement-images', promotion_image: 'promotion-images' } as const;
 
 export interface SignUploadInput {
   purpose: keyof typeof MIME_RULES;
@@ -50,6 +53,8 @@ export function matchesMagicBytes(contentType: string, bytes: Uint8Array): boole
       return ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP';
     case 'image/avif':
       return ascii(4, 8) === 'ftyp' && ['avif', 'avis'].includes(ascii(8, 12));
+    case 'image/gif':
+      return ['GIF87a', 'GIF89a'].includes(ascii(0, 6));
     case 'video/mp4':
       return ascii(4, 8) === 'ftyp';
     case 'video/webm':

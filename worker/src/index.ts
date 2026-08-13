@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { currentAccess, managementLevel, requireApprovedUser, requireLevel1, requireLevel2, requireLevel3, requireUser } from './auth';
 import { ApiError, errorResponse } from './errors';
-import { accountReviewSchema, adminRegisterUserSchema, announcementSchema, banAppealReviewSchema, banAppealSchema, managementLevelSchema, parseLimit, reportReviewSchema, reportSubmissionSchema, reviewQuestionDecisionSchema, reviewQuestionSchema, reviewSchema, siteBackgroundSchema, submissionSchema, uploadCompleteSchema, uploadSignSchema } from './schemas';
+import { accountReviewSchema, adminRegisterUserSchema, announcementSchema, banAppealReviewSchema, banAppealSchema, managementLevelSchema, parseLimit, promotionSchema, reportReviewSchema, reportSubmissionSchema, reviewQuestionDecisionSchema, reviewQuestionSchema, reviewSchema, siteBackgroundSchema, submissionSchema, uploadCompleteSchema, uploadSignSchema, userGroupSchema } from './schemas';
 import { adminClient, publicClient, userClient } from './supabase';
 import { verifyTurnstile } from './turnstile';
 import type { AppEnv } from './types';
@@ -92,10 +92,12 @@ app.get('/v1/sites', async (c) => {
 });
 
 app.get('/v1/site-settings/background', async (c) => {
+  const siteId = c.req.query('site_id') || 'duo';
+  if (!validSiteIds.includes(siteId as SiteId)) throw new ApiError(422, 'invalid_site_id', '站点标识无效');
   const { data, error } = await adminClient(c.env)
     .from('site_settings')
     .select('object_key,updated_at')
-    .eq('key', 'global_background')
+    .eq('key', `${siteId}_background`)
     .maybeSingle();
   if (error) throw new ApiError(502, 'database_error', '无法读取网站背景设置', error.message);
   c.header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
@@ -103,6 +105,26 @@ app.get('/v1/site-settings/background', async (c) => {
     background_url: data?.object_key ? `${c.env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${data.object_key}` : null,
     updated_at: data?.updated_at ?? null,
   } });
+});
+
+app.get('/v1/site-settings/home-background', async (c) => {
+  const { data, error } = await adminClient(c.env).from('site_settings')
+    .select('object_key,updated_at').eq('key', 'home_background').maybeSingle();
+  if (error) throw new ApiError(502, 'database_error', '无法读取主页面背景设置', error.message);
+  c.header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+  return c.json({ data: {
+    background_url: publicMediaUrl(c.env, data?.object_key),
+    updated_at: data?.updated_at ?? null,
+  } });
+});
+
+app.get('/v1/site-settings/promotion', async (c) => {
+  const siteId = c.req.query('site_id') || 'duo';
+  if (!validSiteIds.includes(siteId as SiteId)) throw new ApiError(422, 'invalid_site_id', '站点标识无效');
+  const { data, error } = await adminClient(c.env).from('site_settings').select('object_key,updated_at').eq('key', `${siteId}_promotion`).maybeSingle();
+  if (error) throw new ApiError(502, 'database_error', '无法读取宣传页设置', error.message);
+  c.header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+  return c.json({ data: { promotion_url: publicMediaUrl(c.env, data?.object_key), updated_at: data?.updated_at ?? null } });
 });
 
 app.get('/v1/events', async (c) => {
@@ -239,6 +261,8 @@ app.post('/v1/appeals', requireUser, async (c) => {
 });
 
 app.get('/v1/announcements', async (c) => {
+  const siteId = c.req.query('site_id') || 'duo';
+  if (!validSiteIds.includes(siteId as SiteId)) throw new ApiError(422, 'invalid_site_id', '站点标识无效');
   let audience: 'guest' | 'registered' | 'banned' = 'guest';
   const token = /^Bearer\s+(.+)$/i.exec(c.req.header('Authorization') || '')?.[1];
   if (token) {
@@ -255,13 +279,17 @@ app.get('/v1/announcements', async (c) => {
   }
   const limit = parseLimit(c.req.query('limit'), 50, 100);
   const { data, error } = await adminClient(c.env).from('site_announcements')
-    .select('id,title,message,audience,published_at,updated_at')
+    .select('id,title,message,audience,site_ids,image:media(object_key,status,content_type),published_at,updated_at')
+    .contains('site_ids', [siteId])
     .in('audience', ['all', audience])
     .order('published_at', { ascending: false })
     .limit(limit);
   if (error) throw new ApiError(502, 'database_error', '无法读取站内通知', error.message);
   c.header('Cache-Control', 'private, max-age=30');
-  return c.json({ data: { items: data ?? [], audience } });
+  return c.json({ data: { items: (data ?? []).map((item: any) => {
+    const image = Array.isArray(item.image) ? item.image[0] : item.image;
+    return { ...item, image_url: image?.status === 'available' ? publicMediaUrl(c.env, image.object_key) : null, image: undefined };
+  }), audience } });
 });
 
 app.get('/v1/notifications', requireUser, async (c) => {
@@ -626,17 +654,19 @@ app.get('/v1/admin/users', requireLevel1, async (c) => {
     if (data.users.length < 1000) break;
   }
   const userIds = authUsers.map((user) => user.id);
-  const [{ data: profiles, error: profileError }, { data: roleRows, error: roleError }] = await Promise.all([
+  const [{ data: profiles, error: profileError }, { data: roleRows, error: roleError }, { data: applications, error: applicationError }] = await Promise.all([
     userIds.length ? adminClient(c.env).from('profiles').select('user_id,display_name,status,user_group,registration_site,created_at').in('user_id', userIds) : Promise.resolve({ data: [], error: null }),
     userIds.length ? adminClient(c.env).from('user_roles').select('user_id,role').in('user_id', userIds) : Promise.resolve({ data: [], error: null }),
+    userIds.length ? adminClient(c.env).from('account_applications').select('user_id,question_snapshot,answer,status,review_note,submitted_at,reviewed_at').in('user_id', userIds) : Promise.resolve({ data: [], error: null }),
   ]);
-  if (profileError || roleError) throw new ApiError(502, 'database_error', '无法读取账号权限资料', profileError?.message ?? roleError?.message);
+  if (profileError || roleError || applicationError) throw new ApiError(502, 'database_error', '无法读取账号权限资料', profileError?.message ?? roleError?.message ?? applicationError?.message);
   const profileMap = new Map((profiles ?? []).map((profile) => [profile.user_id, profile]));
   const rolesByUser = new Map<string, string[]>();
+  const applicationByUser = new Map((applications ?? []).map((application) => [application.user_id, application]));
   for (const row of roleRows ?? []) rolesByUser.set(row.user_id, [...(rolesByUser.get(row.user_id) ?? []), row.role]);
   return c.json({ data: authUsers.map((user) => {
     const roles = rolesByUser.get(user.id) ?? ['user'];
-    return { id: user.id, email: user.email ?? null, email_confirmed_at: user.email_confirmed_at, ...profileMap.get(user.id), roles, management_level: managementLevel(roles as Array<'user' | 'editor' | 'moderator' | 'admin'>) };
+    return { id: user.id, email: user.email ?? null, email_confirmed_at: user.email_confirmed_at, ...profileMap.get(user.id), application: applicationByUser.get(user.id) ?? null, roles, management_level: managementLevel(roles as Array<'user' | 'editor' | 'moderator' | 'admin'>) };
   }) });
 });
 
@@ -695,8 +725,17 @@ app.post('/v1/admin/users/:id/management-level', requireLevel1, async (c) => {
   return c.json({ data: { user_id: c.req.param('id'), management_level: data } });
 });
 
+app.post('/v1/admin/users/:id/group', requireLevel1, async (c) => {
+  if (requestSiteId(c) !== 'duo') throw new ApiError(403, 'central_admin_only', '账号分组仅在双人站管理');
+  const parsed = userGroupSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) throw new ApiError(422, 'validation_failed', '账号分组参数格式错误', parsed.error.flatten());
+  const { data, error } = await userClient(c.env, c.get('accessToken')).rpc('assign_user_group', { p_user_id: c.req.param('id'), p_group: parsed.data.group });
+  if (error) throw new ApiError(error.code === '42501' ? 403 : 409, 'group_assignment_failed', '无法修改账号分组', error.message);
+  return c.json({ data: { user_id: c.req.param('id'), user_group: data } });
+});
+
 app.post('/v1/admin/site-background', requireLevel1, async (c) => {
-  if (requestSiteId(c) !== 'duo') throw new ApiError(403, 'central_admin_only', '全站背景仅在双人站管理');
+  const siteId = requestSiteId(c);
   const parsed = siteBackgroundSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '网站背景参数格式错误', parsed.error.flatten());
   const admin = adminClient(c.env);
@@ -710,7 +749,7 @@ app.post('/v1/admin/site-background', requireLevel1, async (c) => {
   }
   const updatedAt = new Date().toISOString();
   const { error } = await admin.from('site_settings').upsert({
-    key: 'global_background',
+    key: `${siteId}_background`,
     media_id: media.id,
     object_key: media.object_key,
     updated_by: c.get('user').id,
@@ -725,36 +764,84 @@ app.post('/v1/admin/site-background', requireLevel1, async (c) => {
   } });
 });
 
+app.post('/v1/admin/home-background', requireLevel1, async (c) => {
+  if (requestSiteId(c) !== 'duo') throw new ApiError(403, 'central_admin_only', '主页面背景仅在双人站管理');
+  const parsed = siteBackgroundSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) throw new ApiError(422, 'validation_failed', '主页面背景参数格式错误', parsed.error.flatten());
+  const admin = adminClient(c.env);
+  const { data: media, error: mediaError } = await admin.from('media').select('id,object_key,purpose,status')
+    .eq('id', parsed.data.media_id).eq('owner_id', c.get('user').id).maybeSingle();
+  if (mediaError || !media || media.purpose !== 'site_background' || media.status !== 'available') {
+    throw new ApiError(409, 'background_media_unavailable', '主页面背景尚未完成上传或不可使用', mediaError?.message);
+  }
+  const updatedAt = new Date().toISOString();
+  const { error } = await admin.from('site_settings').upsert({
+    key: 'home_background', media_id: media.id, object_key: media.object_key,
+    updated_by: c.get('user').id, updated_at: updatedAt,
+  }, { onConflict: 'key' });
+  if (error) throw new ApiError(502, 'database_error', '无法保存主页面背景设置', error.message);
+  return c.json({ data: { media_id: media.id, object_key: media.object_key,
+    background_url: publicMediaUrl(c.env, media.object_key), updated_at: updatedAt } });
+});
+
+app.post('/v1/admin/site-promotion', requireLevel1, async (c) => {
+  const siteId = requestSiteId(c);
+  const parsed = promotionSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) throw new ApiError(422, 'validation_failed', '宣传页图片参数错误', parsed.error.flatten());
+  const admin = adminClient(c.env);
+  const { data: media, error: mediaError } = await admin.from('media').select('id,object_key,purpose,status').eq('id', parsed.data.media_id).eq('owner_id', c.get('user').id).maybeSingle();
+  if (mediaError || !media || media.purpose !== 'promotion_image' || media.status !== 'available') throw new ApiError(409, 'promotion_media_unavailable', '宣传页图片尚未完成上传或不可使用', mediaError?.message);
+  const updatedAt = new Date().toISOString();
+  const { error } = await admin.from('site_settings').upsert({ key: `${siteId}_promotion`, media_id: media.id, object_key: media.object_key, updated_by: c.get('user').id, updated_at: updatedAt }, { onConflict: 'key' });
+  if (error) throw new ApiError(502, 'database_error', '无法保存宣传页设置', error.message);
+  return c.json({ data: { media_id: media.id, promotion_url: publicMediaUrl(c.env, media.object_key), updated_at: updatedAt } });
+});
+
 app.get('/v1/admin/announcements', requireLevel1, async (c) => {
-  if (requestSiteId(c) !== 'duo') throw new ApiError(403, 'central_admin_only', '全站通知仅在双人站管理');
+  const siteId = requestSiteId(c);
   const limit = parseLimit(c.req.query('limit'), 100, 100);
-  const { data, error } = await adminClient(c.env).from('site_announcements')
-    .select('id,title,message,audience,published_at,created_at,updated_at')
+  let query = adminClient(c.env).from('site_announcements')
+    .select('id,title,message,audience,site_ids,image:media(object_key,status,content_type),published_at,created_at,updated_at');
+  if (siteId !== 'duo') query = query.contains('site_ids', [siteId]);
+  const { data, error } = await query
     .order('published_at', { ascending: false })
     .limit(limit);
   if (error) throw new ApiError(502, 'database_error', '无法读取已发布通知', error.message);
-  return c.json({ data: data ?? [] });
+  return c.json({ data: (data ?? []).map((item: any) => {
+    const image = Array.isArray(item.image) ? item.image[0] : item.image;
+    return { ...item, image_url: image?.status === 'available' ? publicMediaUrl(c.env, image.object_key) : null, image: undefined };
+  }) });
 });
 
 app.post('/v1/admin/announcements', requireLevel1, async (c) => {
+  const siteId = requestSiteId(c);
   const parsed = announcementSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '通知内容格式错误', parsed.error.flatten());
   const userId = c.get('user').id;
+  if (parsed.data.image_media_id) {
+    const { data: image } = await adminClient(c.env).from('media').select('id').eq('id', parsed.data.image_media_id).eq('owner_id', userId).eq('purpose', 'announcement_image').eq('status', 'available').maybeSingle();
+    if (!image) throw new ApiError(409, 'announcement_image_unavailable', '通知图片尚未完成上传或不可使用');
+  }
   const { data, error } = await adminClient(c.env).from('site_announcements')
-    .insert({ ...parsed.data, created_by: userId, updated_by: userId })
-    .select('id,title,message,audience,published_at,created_at,updated_at')
+    .insert({ ...parsed.data, site_ids: siteId === 'duo' ? parsed.data.site_ids : [siteId], created_by: userId, updated_by: userId })
+    .select('id,title,message,audience,site_ids,image:media(object_key,status,content_type),published_at,created_at,updated_at')
     .single();
   if (error) throw new ApiError(502, 'database_error', '无法发布通知', error.message);
   return c.json({ data }, 201);
 });
 
 app.post('/v1/admin/announcements/:id/edit', requireLevel1, async (c) => {
+  const siteId = requestSiteId(c);
   const parsed = announcementSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '通知内容格式错误', parsed.error.flatten());
+  if (parsed.data.image_media_id) {
+    const { data: image } = await adminClient(c.env).from('media').select('id').eq('id', parsed.data.image_media_id).eq('owner_id', c.get('user').id).eq('purpose', 'announcement_image').eq('status', 'available').maybeSingle();
+    if (!image) throw new ApiError(409, 'announcement_image_unavailable', '通知图片尚未完成上传或不可使用');
+  }
   const { data, error } = await adminClient(c.env).from('site_announcements')
-    .update({ ...parsed.data, updated_by: c.get('user').id })
+    .update({ ...parsed.data, site_ids: siteId === 'duo' ? parsed.data.site_ids : [siteId], updated_by: c.get('user').id })
     .eq('id', c.req.param('id'))
-    .select('id,title,message,audience,published_at,created_at,updated_at')
+    .select('id,title,message,audience,site_ids,image:media(object_key,status,content_type),published_at,created_at,updated_at')
     .maybeSingle();
   if (error) throw new ApiError(502, 'database_error', '无法修改通知', error.message);
   if (!data) throw new ApiError(404, 'announcement_not_found', '通知不存在');
@@ -775,10 +862,10 @@ app.post('/v1/admin/announcements/:id/delete', requireLevel1, async (c) => {
 app.post('/v1/uploads/sign', requireUser, async (c) => {
   const parsed = uploadSignSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) throw new ApiError(422, 'validation_failed', '上传参数格式错误', parsed.error.flatten());
-  if (parsed.data.purpose === 'site_background') {
+  if (['site_background', 'announcement_image', 'promotion_image'].includes(parsed.data.purpose)) {
     const access = await currentAccess(c);
     if (access.status !== 'active' || managementLevel(access.roles) !== 1) {
-      throw new ApiError(403, 'level_1_required', '只有一级管理员可以上传网站背景');
+      throw new ApiError(403, 'level_1_required', '只有一级管理员可以上传该图片');
     }
   }
   const user = c.get('user');

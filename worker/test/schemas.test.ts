@@ -3,6 +3,7 @@ import { accountReviewSchema, banAppealReviewSchema, banAppealSchema, management
 
 describe('submissionSchema', () => {
   const valid = {
+    person_ids: ['ayg'],
     proposed_sites: ['ayg'],
     title: '测试音乐剧',
     category: '音乐剧',
