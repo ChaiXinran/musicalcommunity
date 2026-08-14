@@ -264,10 +264,12 @@ app.get('/v1/announcements', async (c) => {
   const siteId = c.req.query('site_id') || 'duo';
   if (!validSiteIds.includes(siteId as SiteId)) throw new ApiError(422, 'invalid_site_id', '站点标识无效');
   let audience: 'guest' | 'registered' | 'banned' = 'guest';
+  let viewerId: string | null = null;
   const token = /^Bearer\s+(.+)$/i.exec(c.req.header('Authorization') || '')?.[1];
   if (token) {
     const { data } = await publicClient(c.env).auth.getUser(token);
     if (data.user) {
+      viewerId = data.user.id;
       const { data: activeBans } = await adminClient(c.env).from('user_bans')
         .select('id')
         .eq('user_id', data.user.id)
@@ -285,11 +287,45 @@ app.get('/v1/announcements', async (c) => {
     .order('published_at', { ascending: false })
     .limit(limit);
   if (error) throw new ApiError(502, 'database_error', '无法读取站内通知', error.message);
+  const items = data ?? [];
+  const readMap = new Map<string, string>();
+  if (viewerId && items.length) {
+    const { data: reads, error: readError } = await adminClient(c.env).from('site_announcement_reads')
+      .select('announcement_id,read_at')
+      .eq('user_id', viewerId)
+      .in('announcement_id', items.map((item) => item.id));
+    if (readError) throw new ApiError(502, 'database_error', '无法读取通知已读状态', readError.message);
+    for (const read of reads ?? []) readMap.set(read.announcement_id, read.read_at);
+  }
   c.header('Cache-Control', 'private, max-age=30');
-  return c.json({ data: { items: (data ?? []).map((item: any) => {
+  return c.json({ data: { items: items.map((item: any) => {
     const image = Array.isArray(item.image) ? item.image[0] : item.image;
-    return { ...item, image_url: image?.status === 'available' ? publicMediaUrl(c.env, image.object_key) : null, image: undefined };
+    return { ...item, read_at: readMap.get(item.id) ?? null, image_url: image?.status === 'available' ? publicMediaUrl(c.env, image.object_key) : null, image: undefined };
   }), audience } });
+});
+
+app.post('/v1/announcements/:id/read', requireUser, async (c) => {
+  const siteId = requestSiteId(c);
+  const userId = c.get('user').id;
+  const admin = adminClient(c.env);
+  const { data: announcement, error: announcementError } = await admin.from('site_announcements')
+    .select('id,audience,site_ids')
+    .eq('id', c.req.param('id'))
+    .maybeSingle();
+  if (announcementError) throw new ApiError(502, 'database_error', '无法读取站内通知', announcementError.message);
+  if (!announcement || !announcement.site_ids.includes(siteId)) throw new ApiError(404, 'announcement_not_found', '通知不存在');
+  const { data: activeBans } = await admin.from('user_bans')
+    .select('id').eq('user_id', userId).is('revoked_at', null).is('ends_at', null).limit(1);
+  const viewerAudience = activeBans?.length ? 'banned' : 'registered';
+  if (!['all', viewerAudience].includes(announcement.audience)) throw new ApiError(404, 'announcement_not_found', '通知不存在');
+  const readAt = new Date().toISOString();
+  const { data, error } = await admin.from('site_announcement_reads').upsert({
+    announcement_id: announcement.id,
+    user_id: userId,
+    read_at: readAt,
+  }, { onConflict: 'announcement_id,user_id' }).select('announcement_id,read_at').single();
+  if (error) throw new ApiError(502, 'database_error', '无法更新通知已读状态', error.message);
+  return c.json({ data: { id: data.announcement_id, read_at: data.read_at } });
 });
 
 app.get('/v1/notifications', requireUser, async (c) => {
